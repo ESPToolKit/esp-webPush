@@ -1,0 +1,38 @@
+{
+  "name": "ESPWebPush",
+  "version": "1.0.0",
+  "description": "A Lightweight web push implementation for esp32",
+  "keywords": [
+    "esp32",
+    "arduino",
+    "json",
+    "web-push",
+    "push-notification"
+  ],
+  "homepage": "https://github.com/ESPToolKit/esp-webPush",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ESPToolKit/esp-webPush.git"
+  },
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "zekageri"
+    }
+  ],
+  "frameworks": ["arduino"],
+  "platforms": ["espressif32"],
+  "dependencies": [
+    {
+      "name": "ArduinoJson",
+      "owner": "bblanchon",
+      "version": ">=6.21.0"
+    }
+  ],
+  "headers": ["ESPWebPush.h"],
+  "build": {
+    "flags": [
+      "-std=gnu++17"
+    ]
+  }
+}
