@@ -3,15 +3,21 @@
 extern "C" {
 #include "esp_http_client.h"
 #include "esp_log.h"
+}
+
+#if defined(ESP_IDF_VERSION) && !defined(ARDUINO)
+extern "C" {
 #include "esp_netif.h"
 #include "lwip/ip_addr.h"
 }
+#endif
 
 namespace {
 constexpr const char *kTag = "ESPWebPush";
 }  // namespace
 
 bool ESPWebPush::isNetworkReadyForPush() const {
+#if defined(ESP_IDF_VERSION) && !defined(ARDUINO)
     esp_netif_t *netif = esp_netif_get_default_netif();
     if (!netif) {
         return false;
@@ -28,6 +34,9 @@ bool ESPWebPush::isNetworkReadyForPush() const {
         return false;
     }
     return true;
+#else
+    return true;
+#endif
 }
 
 void ESPWebPush::printHeaderErr(esp_err_t headErr, const char *headKey) const {
