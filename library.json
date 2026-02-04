@@ -1,13 +1,14 @@
 {
   "name": "ESPWebPush",
   "version": "1.0.0",
-  "description": "A Lightweight web push implementation for esp32",
+  "description": "Web Push payload encryption and delivery for ESP32 firmware",
   "keywords": [
     "esp32",
     "arduino",
-    "json",
     "web-push",
-    "push-notification"
+    "push-notification",
+    "vapid",
+    "aesgcm"
   ],
   "homepage": "https://github.com/ESPToolKit/esp-webPush",
   "repository": {
@@ -24,9 +25,8 @@
   "platforms": ["espressif32"],
   "dependencies": [
     {
-      "name": "ArduinoJson",
-      "owner": "bblanchon",
-      "version": ">=6.21.0"
+      "name": "ESPWorker",
+      "version": "https://github.com/ESPToolKit/esp-worker.git"
     }
   ],
   "headers": ["ESPWebPush.h"],

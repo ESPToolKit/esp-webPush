@@ -1,6 +1,6 @@
 # ESPWebPush
 
-ESPWebPush is the future home for Web Push helpers on ESP32: VAPID key handling, payload encryption, and subscription management so firmware can send notifications to browsers without hosting extra glue code. The implementation has not shipped yet—the repository is a placeholder while the API takes shape.
+ESPWebPush is an **async-first** Web Push sender for ESP32 firmware. It handles VAPID JWT signing, Web Push AES-GCM payload encryption, and HTTP delivery so your devices can notify browsers without extra glue code.
 
 ## CI / Release / License
 [![CI](https://github.com/ESPToolKit/esp-webPush/actions/workflows/ci.yml/badge.svg)](https://github.com/ESPToolKit/esp-webPush/actions/workflows/ci.yml)
@@ -8,36 +8,114 @@ ESPWebPush is the future home for Web Push helpers on ESP32: VAPID key handling,
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 
 ## Features
-Planned capabilities:
-- VAPID key generation/storage plus helper functions to sign requests.
-- Payload encryption using the Web Push AEAD scheme (elliptic curve Diffie-Hellman + AES-GCM).
-- Subscription registry that keeps endpoints, auth secrets, and expirations in sync with ESPJsonDB.
-- Async delivery built on ESPFetch so notifications do not block application code.
+- VAPID JWT signing (ES256) from base64url private key.
+- Web Push AES-GCM payload encryption.
+- Async queue + worker task via `ESPWorker`.
+- Optional synchronous `send()` API.
+- Configurable queue length, memory caps (internal vs PSRAM), stack, priority, retries, and timeouts.
+- Uses the standard Web Push headers (`Authorization`, `Crypto-Key`, `Encryption`, `TTL`).
 
-## Examples
-Examples will land with the first release. Expect sketches that:
-- Enrol a device with your backend, exchange VAPID public keys, and store subscriptions locally.
-- Encrypt and POST push payloads to Mozilla/Google endpoints.
-- Handle error responses (expired subscriptions, rate limits) gracefully.
+## Quick Start
+
+```cpp
+#include <Arduino.h>
+#include <ESPWebPush.h>
+
+ESPWebPush webPush;
+
+void setup() {
+    Serial.begin(115200);
+
+    WebPushConfig cfg;
+    cfg.queueLength = 16;
+    cfg.queueMemory = WebPushQueueMemory::Psram;
+    cfg.worker.stackSize = 16 * 1024;
+    cfg.worker.priority = 3;
+    cfg.worker.name = "webpush";
+
+    webPush.init(
+        "notify@example.com",
+        "BAvapidPublicKeyBase64Url...",
+        "vapidPrivateKeyBase64Url...",
+        cfg);
+}
+
+void loop() {}
+```
+
+## Usage
+
+### Subscription / Message Types
+
+```cpp
+Subscription sub;
+sub.endpoint = "https://fcm.googleapis.com/fcm/send/...";
+sub.p256dh = "BME...";  // base64url from browser subscription
+sub.auth = "nsa...";    // base64url from browser subscription
+
+PushMessage msg;
+msg.sub = sub;
+msg.payload = "{\"title\":\"Hello\",\"body\":\"ESP32\"}";
+```
+
+### Async Send
+
+```cpp
+bool started = webPush.send(msg, [](WebPushResult result) {
+    if (!result.ok()) {
+        ESP_LOGE("WEBPUSH", "Push failed: %s (status %d)",
+                 result.message, result.statusCode);
+        return;
+    }
+    ESP_LOGI("WEBPUSH", "Push OK (status %d)", result.statusCode);
+});
+
+if (!started) {
+    ESP_LOGW("WEBPUSH", "Queue full or not initialized");
+}
+```
+
+### Sync Send
+
+```cpp
+WebPushResult result = webPush.send(msg);
+if (!result.ok()) {
+    ESP_LOGW("WEBPUSH", "Sync push failed: %s", result.message);
+}
+```
+
+## Configuration
+
+`WebPushConfig` lets you tune the worker and queue:
+
+- `queueLength` – number of queued messages.
+- `queueMemory` – `Internal`, `Psram`, or `Any`.
+- `worker` – stack size, priority, core id, PSRAM stack usage.
+- `requestTimeoutMs` – HTTP timeout.
+- `ttlSeconds` – Web Push TTL header.
+- `maxRetries`, `retryBaseDelayMs`, `retryMaxDelayMs` – retry/backoff controls.
+- `requireNetworkReady` – optional network readiness checks before send.
 
 ## Gotchas
-- Everything here is pre-release; the headers are placeholders.
-- Web Push requires TLS and elliptic curve cryptography support, so the final API will depend on ESP-IDF features that may not exist on every chip revision.
-- Until documented otherwise, assume breaking changes can happen at any time.
+- **System time is required** for VAPID JWT expiration. Ensure SNTP is synced.
+- Web Push endpoints require TLS; `esp_http_client` must be built with TLS support.
+- `aesgcm` content encoding is used to match legacy Web Push payloads.
 
-## API Reference
-Coming soon once the primitives stabilise. The rough layout will include:
-- `ESPWebPush::init` to inject storage + HTTP clients.
-- `registerSubscription`, `removeSubscription`, `listSubscriptions` helpers.
-- `sendNotification(const Subscription&, Payload payload, Options opts)` built on top of ESPFetch/ESPWorker.
+## API Reference (Core)
+
+- `bool init(contactEmail, publicKeyBase64, privateKeyBase64, config)`
+- `bool send(const PushMessage&, WebPushResultCB cb)` (async)
+- `WebPushResult send(const PushMessage&)` (sync)
+- `void deinit()` / `bool initialized() const`
+- `const char* errorToString(WebPushError)`
 
 ## Restrictions
-- The first release will target ESP32 (Arduino + ESP-IDF) with ArduinoJson for payload preparation.
-- Requires C++17 and a TLS-capable HTTP stack (ESPFetch or native WiFiClientSecure usage).
-- Web Push servers enforce strict quotas—production firmware must handle retries/backoff.
+- ESP32-class targets only (Arduino + ESP-IDF).
+- Requires C++17 and mbedTLS.
+- Do not call from ISR context.
 
 ## Tests
-Automated tests will show up together with the actual implementation. They will include host-side crypto vectors plus integration tests against mock push endpoints. Contributions with early test harness ideas are welcome—open an issue to coordinate.
+Host-side tests are disabled. Use the `examples/` sketches with PlatformIO or Arduino CLI.
 
 ## License
 MIT — see [LICENSE.md](LICENSE.md).
@@ -46,3 +124,4 @@ MIT — see [LICENSE.md](LICENSE.md).
 - Check out other libraries: <https://github.com/orgs/ESPToolKit/repositories>
 - Hang out on Discord: <https://discord.gg/WG8sSqAy>
 - Support the project: <https://ko-fi.com/esptoolkit>
+- Visit the website: <https://www.esptoolkit.hu/>
