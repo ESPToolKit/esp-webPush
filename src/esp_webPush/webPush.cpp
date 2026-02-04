@@ -306,6 +306,8 @@ bool ESPWebPush::validateVapidKeys(WebPushResult &result) {
 }
 
 QueueHandle_t ESPWebPush::createQueue(size_t length, size_t itemSize, WebPushQueueMemory memory) {
+    (void)memory;
+#if defined(ESP_IDF_VERSION) && !defined(ARDUINO)
     uint32_t caps = capsForMemory(memory);
     QueueHandle_t queue = xQueueCreateWithCaps(length, itemSize, caps);
     if (!queue && caps != MALLOC_CAP_DEFAULT) {
@@ -315,6 +317,9 @@ QueueHandle_t ESPWebPush::createQueue(size_t length, size_t itemSize, WebPushQue
         queue = xQueueCreate(length, itemSize);
     }
     return queue;
+#else
+    return xQueueCreate(length, itemSize);
+#endif
 }
 
 ESPWebPush::QueueItem *ESPWebPush::allocateItem() {
