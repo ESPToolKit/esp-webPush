@@ -110,6 +110,9 @@ class ESPWebPush {
     };
 
     struct CryptoState;
+    struct CryptoDeleter {
+        void operator()(CryptoState *state) const;
+    };
 
     WebPushResult handleMessage(const PushMessage &msg);
     bool shouldRetry(const WebPushResult &result) const;
@@ -185,6 +188,6 @@ class ESPWebPush {
     std::atomic<bool> _initialized{false};
     std::atomic<bool> _stopRequested{false};
 
-    std::unique_ptr<CryptoState> _crypto{};
+    std::unique_ptr<CryptoState, CryptoDeleter> _crypto{};
     std::mutex _cryptoMutex;
 };

@@ -32,6 +32,10 @@ struct ESPWebPush::CryptoState {
     }
 };
 
+void ESPWebPush::CryptoDeleter::operator()(CryptoState *state) const {
+    delete state;
+}
+
 bool ESPWebPush::initCrypto() {
     if (!_crypto) {
         CryptoState *state = new (std::nothrow) CryptoState();

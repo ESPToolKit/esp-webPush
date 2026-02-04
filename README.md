@@ -99,7 +99,7 @@ if (!result.ok()) {
 ## Gotchas
 - **System time is required** for VAPID JWT expiration. Ensure SNTP is synced.
 - Web Push endpoints require TLS; `esp_http_client` must be built with TLS support.
-- `aesgcm` content encoding is used to match legacy Web Push payloads.
+- `aesgcm` content encoding is used to match existing Web Push payloads.
 
 ## API Reference (Core)
 
