@@ -69,7 +69,7 @@ bool ESPWebPush::init(const std::string &contactEmail,
 
     ESPWorker::Config workerConfig{};
     workerConfig.maxWorkers = 1;
-    workerConfig.stackSize = _config.worker.stackSize;
+    workerConfig.stackSizeBytes = _config.worker.stackSizeBytes;
     workerConfig.priority = _config.worker.priority;
     workerConfig.coreId = _config.worker.coreId;
     workerConfig.enableExternalStacks = _config.worker.useExternalStack;

@@ -14,3 +14,4 @@ All notable changes to this project will be documented in this file.
 ### Notes
 - JWT signing requires a valid system clock (SNTP).
 - Content encoding uses `aesgcm` with VAPID headers (`Authorization`, `Crypto-Key`, `Encryption`).
+- Updated worker configuration examples to use `WorkerConfig::stackSizeBytes` (ESPWorker API rename).

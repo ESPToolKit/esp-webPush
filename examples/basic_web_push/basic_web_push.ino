@@ -10,7 +10,7 @@ void setup() {
     WebPushConfig cfg;
     cfg.queueLength = 8;
     cfg.queueMemory = WebPushQueueMemory::Psram;
-    cfg.worker.stackSize = 16 * 1024;
+    cfg.worker.stackSizeBytes = 16 * 1024;
     cfg.worker.priority = 3;
     cfg.worker.name = "webpush";
 
