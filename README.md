@@ -10,7 +10,7 @@ ESPWebPush is an **async-first** Web Push sender for ESP32 firmware. It handles 
 ## Features
 - VAPID JWT signing (ES256) from base64url private key.
 - Web Push AES-GCM payload encryption.
-- Async queue + worker task via `ESPWorker`.
+- Async queue + worker task via native FreeRTOS APIs.
 - Optional synchronous `send()` API.
 - Configurable queue length, memory caps (internal vs PSRAM), stack, priority, retries, and timeouts.
 - Uses the standard Web Push headers (`Authorization`, `Crypto-Key`, `Encryption`, `TTL`).

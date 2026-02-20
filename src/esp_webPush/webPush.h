@@ -13,9 +13,15 @@ extern "C" {
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/task.h"
 }
 
-#include <ESPWorker.h>
+struct WebPushWorkerConfig {
+    std::string name = "webpush";
+    uint32_t stackSizeBytes = 4096;
+    UBaseType_t priority = 3;
+    BaseType_t coreId = tskNO_AFFINITY;
+};
 
 struct Subscription {
     std::string endpoint;
@@ -73,7 +79,7 @@ struct WebPushResult {
 using WebPushResultCB = std::function<void(WebPushResult result)>;
 
 struct WebPushConfig {
-    WorkerConfig worker{};
+    WebPushWorkerConfig worker{};
     size_t queueLength = 32;
     WebPushQueueMemory queueMemory = WebPushQueueMemory::Psram;
     uint32_t enqueueTimeoutMs = 100;
@@ -125,6 +131,7 @@ class ESPWebPush {
     QueueItem *allocateItem();
     void freeItem(QueueItem *item);
 
+    static void workerLoopThunk(void *arg);
     void workerLoop();
 
     bool initCrypto();
@@ -182,8 +189,7 @@ class ESPWebPush {
     std::string _vapidEmail{};
     WebPushConfig _config{};
 
-    ESPWorker _worker{};
-    std::shared_ptr<WorkerHandler> _workerHandler{};
+    TaskHandle_t _workerTask = nullptr;
     QueueHandle_t _queue = nullptr;
     std::atomic<bool> _initialized{false};
     std::atomic<bool> _stopRequested{false};

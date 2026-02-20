@@ -67,25 +67,25 @@ bool ESPWebPush::init(const std::string &contactEmail,
         return false;
     }
 
-    ESPWorker::Config workerConfig{};
-    workerConfig.maxWorkers = 1;
-    workerConfig.stackSizeBytes = _config.worker.stackSizeBytes;
-    workerConfig.priority = _config.worker.priority;
-    workerConfig.coreId = _config.worker.coreId;
-    workerConfig.enableExternalStacks = _config.worker.useExternalStack;
-    _worker.init(workerConfig);
-
     _stopRequested.store(false, std::memory_order_release);
-    WorkerResult result = _worker.spawn([this]() { workerLoop(); }, _config.worker);
-    if (!result) {
-        ESP_LOGE(kTag, "init: failed to start worker (%s)", _worker.errorToString(result.error));
-        _worker.deinit();
+    _workerTask = nullptr;
+    const char *taskName = _config.worker.name.empty() ? "webpush" : _config.worker.name.c_str();
+    const BaseType_t created = xTaskCreatePinnedToCore(
+        &ESPWebPush::workerLoopThunk,
+        taskName,
+        _config.worker.stackSizeBytes,
+        this,
+        _config.worker.priority,
+        &_workerTask,
+        _config.worker.coreId);
+    if (created != pdPASS) {
+        ESP_LOGE(kTag, "init: failed to start worker task");
+        _workerTask = nullptr;
         vQueueDelete(_queue);
         _queue = nullptr;
         return false;
     }
 
-    _workerHandler = result.handler;
     _initialized.store(true, std::memory_order_release);
     ESP_LOGI(kTag, "ESPWebPush initialized");
     return true;
@@ -98,13 +98,16 @@ void ESPWebPush::deinit() {
 
     _stopRequested.store(true, std::memory_order_release);
 
-    if (_workerHandler) {
-        _workerHandler->wait(pdMS_TO_TICKS(2000));
-        _workerHandler->destroy();
-        _workerHandler.reset();
+    if (_workerTask != nullptr) {
+        TickType_t start = xTaskGetTickCount();
+        while (_workerTask != nullptr && (xTaskGetTickCount() - start) <= pdMS_TO_TICKS(2000)) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        if (_workerTask != nullptr) {
+            vTaskDelete(_workerTask);
+            _workerTask = nullptr;
+        }
     }
-
-    _worker.deinit();
 
     if (_queue) {
         QueueItem *item = nullptr;
@@ -357,6 +360,17 @@ void ESPWebPush::workerLoop() {
         }
         freeItem(item);
     }
+    _workerTask = nullptr;
+    vTaskDelete(nullptr);
+}
+
+void ESPWebPush::workerLoopThunk(void *arg) {
+    auto *self = static_cast<ESPWebPush *>(arg);
+    if (!self) {
+        vTaskDelete(nullptr);
+        return;
+    }
+    self->workerLoop();
 }
 
 std::string ESPWebPush::endpointOrigin(const std::string &endpoint) const {
