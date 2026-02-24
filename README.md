@@ -84,6 +84,14 @@ if (!result.ok()) {
 }
 ```
 
+### Teardown
+
+```cpp
+if (webPush.isInitialized()) {
+    webPush.deinit();
+}
+```
+
 ## Configuration
 
 `WebPushConfig` lets you tune the worker and queue:
@@ -106,7 +114,7 @@ if (!result.ok()) {
 - `bool init(contactEmail, publicKeyBase64, privateKeyBase64, config)`
 - `bool send(const PushMessage&, WebPushResultCB cb)` (async)
 - `WebPushResult send(const PushMessage&)` (sync)
-- `void deinit()` / `bool initialized() const`
+- `void deinit()` / `bool isInitialized() const`
 - `const char* errorToString(WebPushError)`
 
 ## Restrictions

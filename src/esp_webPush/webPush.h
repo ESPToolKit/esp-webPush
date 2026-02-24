@@ -102,7 +102,7 @@ class ESPWebPush {
               const WebPushConfig &config = WebPushConfig{});
 
     void deinit();
-    bool initialized() const { return _initialized.load(std::memory_order_acquire); }
+    bool isInitialized() const { return _initialized.load(std::memory_order_acquire); }
 
     bool send(const PushMessage &msg, WebPushResultCB callback);
     WebPushResult send(const PushMessage &msg);
@@ -189,7 +189,7 @@ class ESPWebPush {
     std::string _vapidEmail{};
     WebPushConfig _config{};
 
-    TaskHandle_t _workerTask = nullptr;
+    std::atomic<TaskHandle_t> _workerTask{nullptr};
     QueueHandle_t _queue = nullptr;
     std::atomic<bool> _initialized{false};
     std::atomic<bool> _stopRequested{false};
