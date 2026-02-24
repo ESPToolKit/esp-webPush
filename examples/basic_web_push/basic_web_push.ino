@@ -2,6 +2,8 @@
 #include <ESPWebPush.h>
 
 ESPWebPush webPush;
+bool tornDown = false;
+uint32_t teardownAtMs = 0;
 
 void setup() {
     Serial.begin(115200);
@@ -46,8 +48,14 @@ void setup() {
     } else {
         Serial.printf("[webpush] sync ok: %d\n", syncResult.statusCode);
     }
+
+    teardownAtMs = millis() + 5000;
 }
 
 void loop() {
+    if (!tornDown && webPush.isInitialized() && teardownAtMs != 0 && millis() >= teardownAtMs) {
+        webPush.deinit();
+        tornDown = true;
+    }
     vTaskDelay(pdMS_TO_TICKS(1000));
 }

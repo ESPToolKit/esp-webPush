@@ -10,6 +10,11 @@ All notable changes to this project will be documented in this file.
 - Sync `send()` API returning structured `WebPushResult`.
 - Retry/backoff handling for network/transport failures.
 - Basic example sketch and CI workflows.
+- Teardown lifecycle tests for pre-init `deinit()`, idempotent `deinit()`, re-init, and destructor teardown.
+
+### Changed
+- Teardown contract now uses `isInitialized()` and removes the old `initialized()` naming.
+- `deinit()` now always converges teardown, including worker/queue/crypto cleanup and runtime config/key release.
 
 ### Notes
 - JWT signing requires a valid system clock (SNTP).

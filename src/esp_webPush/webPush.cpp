@@ -68,7 +68,7 @@ bool ESPWebPush::init(const std::string &contactEmail,
     }
 
     _stopRequested.store(false, std::memory_order_release);
-    _workerTask = nullptr;
+    TaskHandle_t workerTask = nullptr;
     const char *taskName = _config.worker.name.empty() ? "webpush" : _config.worker.name.c_str();
     const BaseType_t created = xTaskCreatePinnedToCore(
         &ESPWebPush::workerLoopThunk,
@@ -76,36 +76,41 @@ bool ESPWebPush::init(const std::string &contactEmail,
         _config.worker.stackSizeBytes,
         this,
         _config.worker.priority,
-        &_workerTask,
+        &workerTask,
         _config.worker.coreId);
     if (created != pdPASS) {
         ESP_LOGE(kTag, "init: failed to start worker task");
-        _workerTask = nullptr;
+        _workerTask.store(nullptr, std::memory_order_release);
         vQueueDelete(_queue);
         _queue = nullptr;
         return false;
     }
 
+    _workerTask.store(workerTask, std::memory_order_release);
     _initialized.store(true, std::memory_order_release);
     ESP_LOGI(kTag, "ESPWebPush initialized");
     return true;
 }
 
 void ESPWebPush::deinit() {
-    if (!_initialized.load(std::memory_order_acquire)) {
-        return;
-    }
-
+    _initialized.store(false, std::memory_order_release);
     _stopRequested.store(true, std::memory_order_release);
 
-    if (_workerTask != nullptr) {
+    TaskHandle_t workerTask = _workerTask.load(std::memory_order_acquire);
+    if (workerTask != nullptr) {
+        if (_queue != nullptr) {
+            QueueItem *wake = nullptr;
+            (void)xQueueSend(_queue, &wake, 0);
+        }
         TickType_t start = xTaskGetTickCount();
-        while (_workerTask != nullptr && (xTaskGetTickCount() - start) <= pdMS_TO_TICKS(2000)) {
+        while (_workerTask.load(std::memory_order_acquire) != nullptr &&
+               (xTaskGetTickCount() - start) <= pdMS_TO_TICKS(2000)) {
             vTaskDelay(pdMS_TO_TICKS(10));
         }
-        if (_workerTask != nullptr) {
-            vTaskDelete(_workerTask);
-            _workerTask = nullptr;
+        workerTask = _workerTask.load(std::memory_order_acquire);
+        if (workerTask != nullptr) {
+            vTaskDelete(workerTask);
+            _workerTask.store(nullptr, std::memory_order_release);
         }
     }
 
@@ -122,11 +127,15 @@ void ESPWebPush::deinit() {
 
     deinitCrypto();
 
-    _initialized.store(false, std::memory_order_release);
+    std::string().swap(_vapidPublicKey);
+    std::string().swap(_vapidPrivateKey);
+    std::string().swap(_vapidEmail);
+    _config = WebPushConfig{};
+    _stopRequested.store(false, std::memory_order_release);
 }
 
 bool ESPWebPush::send(const PushMessage &msg, WebPushResultCB callback) {
-    if (!_initialized.load(std::memory_order_acquire) || !_queue) {
+    if (!isInitialized() || !_queue) {
         ESP_LOGW(kTag, "send: not initialized");
         return false;
     }
@@ -152,7 +161,7 @@ bool ESPWebPush::send(const PushMessage &msg, WebPushResultCB callback) {
 }
 
 WebPushResult ESPWebPush::send(const PushMessage &msg) {
-    if (!_initialized.load(std::memory_order_acquire)) {
+    if (!isInitialized()) {
         WebPushResult result{};
         result.error = WebPushError::NotInitialized;
         result.message = errorToString(result.error);
@@ -360,7 +369,7 @@ void ESPWebPush::workerLoop() {
         }
         freeItem(item);
     }
-    _workerTask = nullptr;
+    _workerTask.store(nullptr, std::memory_order_release);
     vTaskDelete(nullptr);
 }
 
