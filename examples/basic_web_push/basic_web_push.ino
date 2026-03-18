@@ -15,6 +15,10 @@ void setup() {
 	cfg.worker.stackSizeBytes = 16 * 1024;
 	cfg.worker.priority = 3;
 	cfg.worker.name = "webpush";
+	cfg.networkValidator = []() {
+		// Replace with your own Wi-Fi/Ethernet readiness check.
+		return true;
+	};
 
 	webPush.init(
 	    "notify@example.com",
@@ -28,11 +32,13 @@ void setup() {
 	sub.p256dh = "BMEp256dhBase64Url...";
 	sub.auth = "authSecretBase64Url...";
 
-	PushMessage msg;
-	msg.sub = sub;
-	msg.payload = "{\"title\":\"Hello\",\"body\":\"ESP32\"}";
+	PushPayload payload;
+	payload.title = "Hello";
+	payload.body = "ESP32";
+	payload.tag = "basic-demo";
+	payload.icon = "https://www.esptoolkit.hu/icon.png";
 
-	webPush.send(msg, [](WebPushResult result) {
+	webPush.send(sub, payload, [](WebPushResult result) {
 		if (!result.ok()) {
 			Serial.printf(
 			    "[webpush] async failed: %s (status %d)\n",
@@ -44,7 +50,12 @@ void setup() {
 		Serial.printf("[webpush] async ok: %d\n", result.statusCode);
 	});
 
-	WebPushResult syncResult = webPush.send(msg);
+	JsonDocument jsonPayload;
+	jsonPayload["title"] = "Hello";
+	jsonPayload["body"] = "ESP32";
+	jsonPayload["tag"] = "basic-demo";
+
+	WebPushResult syncResult = webPush.send(sub, jsonPayload);
 	if (!syncResult.ok()) {
 		Serial.printf(
 		    "[webpush] sync failed: %s\n",

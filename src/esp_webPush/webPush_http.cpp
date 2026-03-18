@@ -5,39 +5,9 @@ extern "C" {
 #include "esp_log.h"
 }
 
-#if defined(ESP_IDF_VERSION) && !defined(ARDUINO)
-extern "C" {
-#include "esp_netif.h"
-#include "lwip/ip_addr.h"
-}
-#endif
-
 namespace {
 constexpr const char *kTag = "ESPWebPush";
 } // namespace
-
-bool ESPWebPush::isNetworkReadyForPush() const {
-#if defined(ESP_IDF_VERSION) && !defined(ARDUINO)
-	esp_netif_t *netif = esp_netif_get_default_netif();
-	if (!netif) {
-		return false;
-	}
-	if (!esp_netif_is_netif_up(netif)) {
-		return false;
-	}
-
-	esp_netif_dns_info_t dnsInfo{};
-	if (esp_netif_get_dns_info(netif, ESP_NETIF_DNS_MAIN, &dnsInfo) != ESP_OK) {
-		return false;
-	}
-	if (dnsInfo.ip.type != IPADDR_TYPE_V4 || dnsInfo.ip.u_addr.ip4.addr == 0) {
-		return false;
-	}
-	return true;
-#else
-	return true;
-#endif
-}
 
 void ESPWebPush::printHeaderErr(esp_err_t headErr, const char *headKey) const {
 	if (headErr != ESP_OK) {

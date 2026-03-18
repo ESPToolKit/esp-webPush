@@ -1,4 +1,5 @@
 #include "webPush.h"
+#include "webPush_payload.h"
 
 #include <new>
 #include <utility>
@@ -52,6 +53,7 @@ bool ESPWebPush::init(
 	_vapidEmail = contactEmail;
 	_vapidPublicKey = publicKeyBase64;
 	_vapidPrivateKey = privateKeyBase64;
+	setNetworkValidator(config.networkValidator);
 
 	if (_config.worker.name.empty()) {
 		_config.worker.name = "webpush";
@@ -137,6 +139,7 @@ void ESPWebPush::deinit() {
 	std::string().swap(_vapidPublicKey);
 	std::string().swap(_vapidPrivateKey);
 	std::string().swap(_vapidEmail);
+	setNetworkValidator(WebPushNetworkValidator{});
 	_config = WebPushConfig{};
 	_stopRequested.store(false, std::memory_order_release);
 }
@@ -177,6 +180,90 @@ WebPushResult ESPWebPush::send(const PushMessage &msg) {
 	return handleMessage(msg);
 }
 
+bool ESPWebPush::send(
+    const Subscription &sub, const PushPayload &payload, WebPushResultCB callback
+) {
+	if (!isInitialized() || !_queue) {
+		ESP_LOGW(kTag, "send: not initialized");
+		return false;
+	}
+
+	PushMessage message;
+	WebPushResult result{};
+	if (!buildMessage(sub, payload, message, result)) {
+		if (callback) {
+			callback(result);
+		}
+		return false;
+	}
+	return send(message, std::move(callback));
+}
+
+WebPushResult ESPWebPush::send(const Subscription &sub, const PushPayload &payload) {
+	if (!isInitialized()) {
+		WebPushResult result{};
+		result.error = WebPushError::NotInitialized;
+		result.message = errorToString(result.error);
+		return result;
+	}
+
+	PushMessage message;
+	WebPushResult result{};
+	if (!buildMessage(sub, payload, message, result)) {
+		return result;
+	}
+	return send(message);
+}
+
+bool ESPWebPush::send(
+    const Subscription &sub, const JsonDocument &payload, WebPushResultCB callback
+) {
+	return send(sub, payload.as<JsonVariantConst>(), std::move(callback));
+}
+
+WebPushResult ESPWebPush::send(const Subscription &sub, const JsonDocument &payload) {
+	return send(sub, payload.as<JsonVariantConst>());
+}
+
+bool ESPWebPush::send(const Subscription &sub, JsonVariantConst payload, WebPushResultCB callback) {
+	if (!isInitialized() || !_queue) {
+		ESP_LOGW(kTag, "send: not initialized");
+		return false;
+	}
+
+	PushMessage message;
+	WebPushResult result{};
+	if (!buildMessage(sub, payload, message, result)) {
+		if (callback) {
+			callback(result);
+		}
+		return false;
+	}
+	return send(message, std::move(callback));
+}
+
+WebPushResult ESPWebPush::send(const Subscription &sub, JsonVariantConst payload) {
+	if (!isInitialized()) {
+		WebPushResult result{};
+		result.error = WebPushError::NotInitialized;
+		result.message = errorToString(result.error);
+		return result;
+	}
+
+	PushMessage message;
+	WebPushResult result{};
+	if (!buildMessage(sub, payload, message, result)) {
+		return result;
+	}
+	return send(message);
+}
+
+void ESPWebPush::setNetworkValidator(WebPushNetworkValidator validator) {
+	std::lock_guard<std::mutex> guard(_networkValidatorMutex);
+	_networkValidator = std::move(validator);
+	_config.networkValidator = _networkValidator;
+}
+
 const char *ESPWebPush::errorToString(WebPushError error) const {
 	switch (error) {
 	case WebPushError::None:
@@ -187,6 +274,8 @@ const char *ESPWebPush::errorToString(WebPushError error) const {
 		return "invalid config";
 	case WebPushError::InvalidSubscription:
 		return "invalid subscription";
+	case WebPushError::InvalidPayload:
+		return "invalid payload";
 	case WebPushError::InvalidVapidKeys:
 		return "invalid VAPID keys";
 	case WebPushError::QueueFull:
@@ -212,6 +301,45 @@ const char *ESPWebPush::errorToString(WebPushError error) const {
 	}
 }
 
+WebPushResult ESPWebPush::invalidPayloadResult() const {
+	WebPushResult result{};
+	result.error = WebPushError::InvalidPayload;
+	result.message = errorToString(result.error);
+	return result;
+}
+
+bool ESPWebPush::buildMessage(
+    const Subscription &sub, const PushPayload &payload, PushMessage &message, WebPushResult &result
+) const {
+	std::string serializedPayload;
+	const char *payloadError = serializePushPayload(payload, serializedPayload);
+	if (payloadError != nullptr) {
+		ESP_LOGW(kTag, "send: %s", payloadError);
+		result = invalidPayloadResult();
+		return false;
+	}
+
+	message.sub = sub;
+	message.payload = std::move(serializedPayload);
+	return true;
+}
+
+bool ESPWebPush::buildMessage(
+    const Subscription &sub, JsonVariantConst payload, PushMessage &message, WebPushResult &result
+) const {
+	std::string serializedPayload;
+	const char *payloadError = validateAndSerializePushPayload(payload, serializedPayload);
+	if (payloadError != nullptr) {
+		ESP_LOGW(kTag, "send: %s", payloadError);
+		result = invalidPayloadResult();
+		return false;
+	}
+
+	message.sub = sub;
+	message.payload = std::move(serializedPayload);
+	return true;
+}
+
 WebPushResult ESPWebPush::handleMessage(const PushMessage &msg) {
 	WebPushResult result{};
 	if (!validateSubscription(msg.sub, result)) {
@@ -219,7 +347,7 @@ WebPushResult ESPWebPush::handleMessage(const PushMessage &msg) {
 	}
 
 	for (uint8_t attempt = 0; attempt <= _config.maxRetries; ++attempt) {
-		if (_config.requireNetworkReady && !isNetworkReadyForPush()) {
+		if (!isNetworkReadyForPush()) {
 			result.error = WebPushError::NetworkUnavailable;
 			result.message = errorToString(result.error);
 			if (attempt >= _config.maxRetries) {
@@ -262,6 +390,20 @@ WebPushResult ESPWebPush::handleMessage(const PushMessage &msg) {
 	result.error = WebPushError::InternalError;
 	result.message = errorToString(result.error);
 	return result;
+}
+
+bool ESPWebPush::isNetworkReadyForPush() const {
+	WebPushNetworkValidator validator;
+	{
+		std::lock_guard<std::mutex> guard(_networkValidatorMutex);
+		validator = _networkValidator;
+	}
+
+	if (!validator) {
+		return true;
+	}
+
+	return validator();
 }
 
 bool ESPWebPush::shouldRetry(const WebPushResult &result) const {

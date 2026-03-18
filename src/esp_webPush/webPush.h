@@ -1,11 +1,13 @@
 #pragma once
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 
 #include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -37,6 +39,29 @@ struct PushMessage {
 	std::string payload;
 };
 
+struct PushAction {
+	std::string action;
+	std::string title;
+	std::optional<std::string> icon;
+	std::optional<std::string> navigate;
+};
+
+struct PushPayload {
+	std::string title;
+	std::string body;
+	std::optional<std::string> tag;
+	std::optional<std::string> icon;
+	std::optional<std::string> badge;
+	std::optional<std::string> image;
+	JsonDocument data;
+	bool hasData = false;
+	std::vector<PushAction> actions;
+	std::optional<bool> renotify;
+	std::optional<bool> requireInteraction;
+	std::optional<bool> silent;
+	std::optional<uint64_t> timestamp;
+};
+
 enum class WebPushQueueMemory : uint8_t { Any = 0, Internal, Psram };
 
 enum class WebPushError : uint8_t {
@@ -44,6 +69,7 @@ enum class WebPushError : uint8_t {
 	NotInitialized,
 	InvalidConfig,
 	InvalidSubscription,
+	InvalidPayload,
 	InvalidVapidKeys,
 	QueueFull,
 	OutOfMemory,
@@ -73,6 +99,7 @@ struct WebPushResult {
 };
 
 using WebPushResultCB = std::function<void(WebPushResult result)>;
+using WebPushNetworkValidator = std::function<bool()>;
 
 struct WebPushConfig {
 	WebPushWorkerConfig worker{};
@@ -84,7 +111,7 @@ struct WebPushConfig {
 	uint8_t maxRetries = 5;
 	uint32_t retryBaseDelayMs = 1500;
 	uint32_t retryMaxDelayMs = 15000;
-	bool requireNetworkReady = true;
+	WebPushNetworkValidator networkValidator;
 };
 
 class ESPWebPush {
@@ -106,6 +133,14 @@ class ESPWebPush {
 
 	bool send(const PushMessage &msg, WebPushResultCB callback);
 	WebPushResult send(const PushMessage &msg);
+	bool send(const Subscription &sub, const PushPayload &payload, WebPushResultCB callback);
+	WebPushResult send(const Subscription &sub, const PushPayload &payload);
+	bool send(const Subscription &sub, const JsonDocument &payload, WebPushResultCB callback);
+	WebPushResult send(const Subscription &sub, const JsonDocument &payload);
+	bool send(const Subscription &sub, JsonVariantConst payload, WebPushResultCB callback);
+	WebPushResult send(const Subscription &sub, JsonVariantConst payload);
+
+	void setNetworkValidator(WebPushNetworkValidator validator);
 
 	const char *errorToString(WebPushError error) const;
 
@@ -126,6 +161,19 @@ class ESPWebPush {
 
 	bool validateSubscription(const Subscription &sub, WebPushResult &result) const;
 	bool validateVapidKeys(WebPushResult &result);
+	bool buildMessage(
+	    const Subscription &sub,
+	    const PushPayload &payload,
+	    PushMessage &message,
+	    WebPushResult &result
+	) const;
+	bool buildMessage(
+	    const Subscription &sub,
+	    JsonVariantConst payload,
+	    PushMessage &message,
+	    WebPushResult &result
+	) const;
+	WebPushResult invalidPayloadResult() const;
 
 	QueueHandle_t createQueue(size_t length, size_t itemSize, WebPushQueueMemory memory);
 	QueueItem *allocateItem();
@@ -206,4 +254,6 @@ class ESPWebPush {
 
 	std::unique_ptr<CryptoState, CryptoDeleter> _crypto{};
 	std::mutex _cryptoMutex;
+	mutable std::mutex _networkValidatorMutex;
+	WebPushNetworkValidator _networkValidator{};
 };
