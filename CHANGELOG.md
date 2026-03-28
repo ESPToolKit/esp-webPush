@@ -4,23 +4,35 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- Breaking: renamed the public transport struct from `Subscription` to `WebPushSubscription` everywhere with no compatibility alias.
+- Breaking: renamed `PushMessage.sub` to `PushMessage.subscription` for API consistency.
+- Breaking: removed app-level metadata fields `deviceId`, `disabledTags`, and `deleted` from the transport struct.
+- `validateSubscription()` now validates only the required Web Push transport fields: `endpoint`, `p256dh`, and `auth`.
+
+## [2.0.0] - 2026-03-28
+
 ### Added
-- Core ESPWebPush implementation: VAPID JWT signing, AES-GCM payload encryption, and HTTP delivery.
-- Async queue + worker task with configurable stack, priority, queue length, and memory caps.
-- Sync `send()` API returning structured `WebPushResult`.
-- Retry/backoff handling for network/transport failures.
-- Basic example sketch and CI workflows.
-- Teardown lifecycle tests for pre-init `deinit()`, idempotent `deinit()`, re-init, and destructor teardown.
-- Strict `PushPayload` API with typed notification fields and ArduinoJson v7+ overloads.
-- User-provided network validator callback support.
+- `WebPushVapidConfig` with standards-based `subject`, public key, and private key inputs.
+- `WebPushEnqueueResult` for async preflight / queue outcomes.
+- `WebPushJoinStatus` plus `requestStop()` / `join(timeoutMs)` for bounded worker shutdown.
+- RFC 8291 Appendix A key-derivation and encrypted-body test coverage.
+- Payload-size guard with the RFC-safe default limit of 3993 bytes.
+- Small per-origin JWT cache for VAPID header reuse.
 
 ### Changed
-- Teardown contract now uses `isInitialized()` and removes the old `initialized()` naming.
-- `deinit()` now always converges teardown, including worker/queue/crypto cleanup and runtime config/key release.
-- Structured payload inputs now reject unknown fields, missing required fields, and invalid types before enqueue/send.
-- ArduinoJson v7+ is now an explicit dependency.
+- Reworked encryption and transport to use RFC 8188 / RFC 8291 `aes128gcm` only.
+- `init()` now validates `mailto:` / `https://` VAPID subjects and verifies that the configured public key matches the private key.
+- Async `send()` overloads now return `WebPushEnqueueResult` and only invoke callbacks for queued work.
+- `deinit()` now returns `WebPushJoinStatus` and uses a bounded stop/join flow instead of waiting forever.
+- JWT payload assembly now uses dynamic `std::string` construction instead of a fixed stack buffer.
+- Structured and raw payload sends now enforce the payload-size guard before transport.
+- README, example sketch, package metadata, and CI now describe the v2 API and drop stale `esp-worker` references.
+- CI push triggers now include `feature/**` branches so v2 work runs workflows before merge.
+- `library.json` now advertises both Arduino and ESP-IDF compatibility.
+- Package metadata now reports the breaking release as `2.0.0`.
 
 ### Notes
-- JWT signing requires a valid system clock (SNTP).
-- Content encoding uses `aesgcm` with VAPID headers (`Authorization`, `Crypto-Key`, `Encryption`).
-- Worker configuration now uses `WebPushWorkerConfig` with native FreeRTOS task creation.
+- JWT signing still requires a valid system clock (SNTP).
+- Push sends use `Content-Encoding: aes128gcm` with VAPID `Authorization`.
+- Breaking changes in v2 include the new `init()` signature, async enqueue return type, bounded shutdown API, and RFC 8291-only protocol behavior.

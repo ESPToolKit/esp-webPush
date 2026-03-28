@@ -36,7 +36,7 @@ std::string ESPWebPush::base64UrlEncode(const std::string &input) {
 	return base64UrlEncode(reinterpret_cast<const uint8_t *>(input.data()), input.size());
 }
 
-bool ESPWebPush::base64UrlDecode(const std::string &input, std::vector<uint8_t> &output) {
+bool ESPWebPush::base64UrlDecode(const std::string &input, std::vector<uint8_t> &output) const {
 	if (input.empty()) {
 		output.clear();
 		return false;

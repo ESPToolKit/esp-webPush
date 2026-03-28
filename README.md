@@ -1,24 +1,24 @@
 # ESPWebPush
 
-ESPWebPush is an **async-first** Web Push sender for ESP32 firmware. It handles VAPID JWT signing, Web Push AES-GCM payload encryption, and HTTP delivery so your devices can notify browsers without extra glue code.
+ESPWebPush is an async-first Web Push sender for ESP32 firmware. It handles VAPID JWT signing, RFC 8291 `aes128gcm` payload encryption, and HTTP delivery so devices can notify browsers without custom glue code.
 
-ArduinoJson v7+ is a required dependency for the structured payload API.
+ArduinoJson v7+ is required for the structured payload API.
 
 ## CI / Release / License
 [![CI](https://github.com/ESPToolKit/esp-webPush/actions/workflows/ci.yml/badge.svg)](https://github.com/ESPToolKit/esp-webPush/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/ESPToolKit/esp-webPush?sort=semver)](https://github.com/ESPToolKit/esp-webPush/releases)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
+[![License: MIT](https://img.shields.io/github/license/ESPToolKit/esp-webPush)](LICENSE.md)
 
 ## Features
-- VAPID JWT signing (ES256) from base64url private key.
-- Web Push AES-GCM payload encryption.
+- RFC 8292 VAPID JWT signing with `mailto:` or `https://` subjects.
+- RFC 8291 / RFC 8188 `aes128gcm` Web Push encryption.
 - Async queue + worker task via native FreeRTOS APIs.
-- Optional synchronous `send()` API.
+- Bounded shutdown via `requestStop()`, `join(timeoutMs)`, and `deinit(timeoutMs)`.
+- Sync `send()` API plus async `send()` overloads that return `WebPushEnqueueResult`.
 - Strict `PushPayload` validation for browser notification fields.
-- ArduinoJson v7+ overloads for validated `JsonDocument` / `JsonVariantConst` payloads.
-- Configurable queue length, memory caps (internal vs PSRAM), stack, priority, retries, and timeouts.
-- Optional application-provided network validator callback.
-- Uses the standard Web Push headers (`Authorization`, `Crypto-Key`, `Encryption`, `TTL`).
+- Payload-size guard with the RFC-safe default limit of 3993 bytes.
+- Small per-origin JWT cache to avoid re-signing every message.
+- Configurable queue length, memory caps, retries, timeouts, and worker task settings.
 
 ## Quick Start
 
@@ -31,19 +31,21 @@ ESPWebPush webPush;
 void setup() {
     Serial.begin(115200);
 
+    WebPushVapidConfig vapid;
+    vapid.subject = "mailto:notify@example.com";
+    vapid.publicKeyBase64 = "BAvapidPublicKeyBase64Url...";
+    vapid.privateKeyBase64 = "vapidPrivateKeyBase64Url...";
+
     WebPushConfig cfg;
     cfg.queueLength = 16;
     cfg.queueMemory = WebPushQueueMemory::Psram;
     cfg.worker.stackSizeBytes = 16 * 1024;
     cfg.worker.priority = 3;
     cfg.worker.name = "webpush";
+    cfg.maxPayloadBytes = 3993;
     cfg.networkValidator = []() { return true; };
 
-    webPush.init(
-        "notify@example.com",
-        "BAvapidPublicKeyBase64Url...",
-        "vapidPrivateKeyBase64Url...",
-        cfg);
+    webPush.init(vapid, cfg);
 }
 
 void loop() {}
@@ -51,13 +53,13 @@ void loop() {}
 
 ## Usage
 
-### Subscription / Structured Payload
+### WebPushSubscription / Structured Payload
 
 ```cpp
-Subscription sub;
-sub.endpoint = "https://fcm.googleapis.com/fcm/send/...";
-sub.p256dh = "BME...";  // base64url from browser subscription
-sub.auth = "nsa...";    // base64url from browser subscription
+WebPushSubscription subscription;
+subscription.endpoint = "https://fcm.googleapis.com/fcm/send/...";
+subscription.p256dh = "BME...";
+subscription.auth = "nsa...";
 
 PushPayload payload;
 payload.title = "Hello";
@@ -69,7 +71,7 @@ payload.icon = "https://example.com/icon.png";
 ### Async Send
 
 ```cpp
-bool started = webPush.send(sub, payload, [](WebPushResult result) {
+WebPushEnqueueResult enqueue = webPush.send(subscription, payload, [](WebPushResult result) {
     if (!result.ok()) {
         ESP_LOGE("WEBPUSH", "Push failed: %s (status %d)",
                  result.message, result.statusCode);
@@ -78,10 +80,12 @@ bool started = webPush.send(sub, payload, [](WebPushResult result) {
     ESP_LOGI("WEBPUSH", "Push OK (status %d)", result.statusCode);
 });
 
-if (!started) {
-    ESP_LOGW("WEBPUSH", "Queue full or not initialized");
+if (!enqueue.queued()) {
+    ESP_LOGW("WEBPUSH", "Enqueue failed: %s", enqueue.message);
 }
 ```
+
+Async preflight failures are returned through `WebPushEnqueueResult`. The callback only runs for messages that were actually queued.
 
 ### ArduinoJson v7+ Send
 
@@ -91,13 +95,13 @@ doc["title"] = "Hello";
 doc["body"] = "ESP32";
 doc["tag"] = "demo";
 
-WebPushResult result = webPush.send(sub, doc);
+WebPushResult result = webPush.send(subscription, doc);
 ```
 
 ### Sync Send
 
 ```cpp
-WebPushResult result = webPush.send(sub, payload);
+WebPushResult result = webPush.send(subscription, payload);
 if (!result.ok()) {
     ESP_LOGW("WEBPUSH", "Sync push failed: %s", result.message);
 }
@@ -107,7 +111,7 @@ if (!result.ok()) {
 
 ```cpp
 PushMessage msg;
-msg.sub = sub;
+msg.subscription = subscription;
 msg.payload = "{\"title\":\"Hello\",\"body\":\"ESP32\"}";
 
 // Raw payload strings remain supported, but they are not schema-validated.
@@ -118,60 +122,73 @@ WebPushResult result = webPush.send(msg);
 
 ```cpp
 if (webPush.isInitialized()) {
-    webPush.deinit();
+    WebPushJoinStatus stopStatus = webPush.deinit();
+    if (stopStatus == WebPushJoinStatus::Timeout) {
+        ESP_LOGW("WEBPUSH", "Worker did not stop within the timeout");
+    }
 }
 ```
+
+`requestStop()` marks shutdown and wakes the worker without blocking. `join(timeoutMs)` waits for the worker to exit and finalizes shutdown when the stop completes in time. `deinit(timeoutMs)` is the convenience wrapper that performs both in one call.
 
 ## Configuration
 
 `WebPushConfig` lets you tune the worker and queue:
 
-- `queueLength` – number of queued messages.
-- `queueMemory` – `Internal`, `Psram`, or `Any`.
-- `worker` – stack size, priority, core id, PSRAM stack usage.
-- `requestTimeoutMs` – HTTP timeout.
-- `ttlSeconds` – Web Push TTL header.
-- `maxRetries`, `retryBaseDelayMs`, `retryMaxDelayMs` – retry/backoff controls.
-- `networkValidator` – optional callback for application-defined network readiness checks.
+- `queueLength` - number of queued messages.
+- `queueMemory` - `Internal`, `Psram`, or `Any`.
+- `worker` - stack size, priority, core id, and task name.
+- `requestTimeoutMs` - HTTP timeout.
+- `ttlSeconds` - Web Push TTL header.
+- `maxRetries`, `retryBaseDelayMs`, `retryMaxDelayMs` - retry/backoff controls.
+- `maxPayloadBytes` - plaintext payload size guard. The default is 3993 bytes; use `0` to disable.
+- `networkValidator` - optional callback for application-defined network readiness checks.
 
 ## Gotchas
-- **System time is required** for VAPID JWT expiration. Ensure SNTP is synced.
-- Web Push endpoints require TLS; `esp_http_client` must be built with TLS support.
-- `aesgcm` content encoding is used to match existing Web Push payloads.
-- Structured payload inputs reject unknown top-level keys and invalid field types.
+- System time is required for VAPID JWT expiration.
+- Web Push endpoints require TLS-capable `esp_http_client`.
+- Only `aes128gcm` is generated. Legacy `aesgcm` is intentionally not supported in v2.
+- `subject` must start with `mailto:` or `https://`.
+- The configured VAPID public key must match the private key.
 
-## API Reference (Core)
+## API Reference
 
-- `bool init(contactEmail, publicKeyBase64, privateKeyBase64, config)`
-- `bool send(const PushMessage&, WebPushResultCB cb)` (async)
-- `WebPushResult send(const PushMessage&)` (sync)
-- `bool send(const Subscription&, const PushPayload&, WebPushResultCB cb)` / `WebPushResult send(const Subscription&, const PushPayload&)`
-- `bool send(const Subscription&, const JsonDocument&, WebPushResultCB cb)` / `WebPushResult send(const Subscription&, const JsonDocument&)`
-- `bool send(const Subscription&, JsonVariantConst, WebPushResultCB cb)` / `WebPushResult send(const Subscription&, JsonVariantConst)`
+- `bool init(const WebPushVapidConfig&, const WebPushConfig& = {})`
+- `WebPushEnqueueResult send(const PushMessage&, WebPushResultCB cb)`
+- `WebPushResult send(const PushMessage&)`
+- `WebPushEnqueueResult send(const WebPushSubscription&, const PushPayload&, WebPushResultCB cb)`
+- `WebPushResult send(const WebPushSubscription&, const PushPayload&)`
+- `WebPushEnqueueResult send(const WebPushSubscription&, const JsonDocument&, WebPushResultCB cb)`
+- `WebPushResult send(const WebPushSubscription&, const JsonDocument&)`
+- `WebPushEnqueueResult send(const WebPushSubscription&, JsonVariantConst, WebPushResultCB cb)`
+- `WebPushResult send(const WebPushSubscription&, JsonVariantConst)`
+- `void requestStop()`
+- `WebPushJoinStatus join(uint32_t timeoutMs)`
 - `void setNetworkValidator(WebPushNetworkValidator)`
-- `void deinit()` / `bool isInitialized() const`
-- `const char* errorToString(WebPushError)`
+- `WebPushJoinStatus deinit(uint32_t timeoutMs = 10000)` / `bool isInitialized() const`
+- `const char *errorToString(WebPushError)`
 
-## Restrictions
-- ESP32-class targets only (Arduino + ESP-IDF).
+## Compatibility
+- ESP32-class targets only.
+- Arduino and ESP-IDF frameworks are supported.
 - Requires C++17, ArduinoJson v7+, and mbedTLS.
 - Do not call from ISR context.
 
 ## Tests
-Host-side tests are disabled. Use the `examples/` sketches with PlatformIO or Arduino CLI.
+- On-device Unity tests live in `test/test_esp_webPush`.
+- CI builds Arduino examples and includes an ESP-IDF compile smoke build.
 
 ## Formatting Baseline
 
 This repository follows the firmware formatting baseline from `esptoolkit-template`:
 - `.clang-format` is the source of truth for C/C++/INO layout.
 - `.editorconfig` enforces tabs (`tab_width = 4`), LF endings, and final newline.
-- Format all tracked firmware sources with `bash scripts/format_cpp.sh`.
+- Format tracked firmware sources with `bash scripts/format_cpp.sh`.
 
 ## License
-MIT — see [LICENSE.md](LICENSE.md).
+MIT - see [LICENSE.md](LICENSE.md).
 
 ## ESPToolKit
 - Check out other libraries: <https://github.com/orgs/ESPToolKit/repositories>
-- Hang out on Discord: <https://discord.gg/WG8sSqAy>
 - Support the project: <https://ko-fi.com/esptoolkit>
 - Visit the website: <https://www.esptoolkit.hu/>

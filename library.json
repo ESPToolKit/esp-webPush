@@ -1,6 +1,6 @@
 {
   "name": "ESPWebPush",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "description": "Web Push payload encryption and delivery for ESP32 firmware",
   "keywords": [
     "esp32",
@@ -8,7 +8,7 @@
     "web-push",
     "push-notification",
     "vapid",
-    "aesgcm"
+    "aes128gcm"
   ],
   "homepage": "https://github.com/ESPToolKit/esp-webPush",
   "repository": {
@@ -21,7 +21,10 @@
       "name": "zekageri"
     }
   ],
-  "frameworks": ["arduino"],
+  "frameworks": [
+    "arduino",
+    "espidf"
+  ],
   "platforms": ["espressif32"],
   "dependencies": [
     {
