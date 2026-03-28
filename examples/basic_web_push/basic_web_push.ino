@@ -15,17 +15,18 @@ void setup() {
 	cfg.worker.stackSizeBytes = 16 * 1024;
 	cfg.worker.priority = 3;
 	cfg.worker.name = "webpush";
+	cfg.maxPayloadBytes = 3993;
 	cfg.networkValidator = []() {
 		// Replace with your own Wi-Fi/Ethernet readiness check.
 		return true;
 	};
 
-	webPush.init(
-	    "notify@example.com",
-	    "BAvapidPublicKeyBase64Url...",
-	    "vapidPrivateKeyBase64Url...",
-	    cfg
-	);
+	WebPushVapidConfig vapid;
+	vapid.subject = "mailto:notify@example.com";
+	vapid.publicKeyBase64 = "BAvapidPublicKeyBase64Url...";
+	vapid.privateKeyBase64 = "vapidPrivateKeyBase64Url...";
+
+	webPush.init(vapid, cfg);
 
 	Subscription sub;
 	sub.endpoint = "https://fcm.googleapis.com/fcm/send/...";
@@ -38,7 +39,7 @@ void setup() {
 	payload.tag = "basic-demo";
 	payload.icon = "https://www.esptoolkit.hu/icon.png";
 
-	webPush.send(sub, payload, [](WebPushResult result) {
+	WebPushEnqueueResult enqueue = webPush.send(sub, payload, [](WebPushResult result) {
 		if (!result.ok()) {
 			Serial.printf(
 			    "[webpush] async failed: %s (status %d)\n",
@@ -49,6 +50,13 @@ void setup() {
 		}
 		Serial.printf("[webpush] async ok: %d\n", result.statusCode);
 	});
+
+	if (!enqueue.queued()) {
+		Serial.printf(
+		    "[webpush] enqueue failed: %s\n",
+		    enqueue.message ? enqueue.message : "unknown"
+		);
+	}
 
 	JsonDocument jsonPayload;
 	jsonPayload["title"] = "Hello";

@@ -8,7 +8,7 @@
     "web-push",
     "push-notification",
     "vapid",
-    "aesgcm"
+    "aes128gcm"
   ],
   "homepage": "https://github.com/ESPToolKit/esp-webPush",
   "repository": {
@@ -21,7 +21,10 @@
       "name": "zekageri"
     }
   ],
-  "frameworks": ["arduino"],
+  "frameworks": [
+    "arduino",
+    "espidf"
+  ],
   "platforms": ["espressif32"],
   "dependencies": [
     {

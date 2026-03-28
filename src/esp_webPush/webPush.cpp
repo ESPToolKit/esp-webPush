@@ -13,6 +13,7 @@ extern "C" {
 namespace {
 constexpr const char *kTag = "ESPWebPush";
 constexpr TickType_t kWorkerPollTicks = pdMS_TO_TICKS(250);
+constexpr TickType_t kStopDelaySliceTicks = pdMS_TO_TICKS(50);
 
 uint32_t capsForMemory(WebPushQueueMemory memory) {
 	switch (memory) {
@@ -31,16 +32,12 @@ ESPWebPush::~ESPWebPush() {
 	deinit();
 }
 
-bool ESPWebPush::init(
-    const std::string &contactEmail,
-    const std::string &publicKeyBase64,
-    const std::string &privateKeyBase64,
-    const WebPushConfig &config
-) {
+bool ESPWebPush::init(const WebPushVapidConfig &vapidConfig, const WebPushConfig &config) {
 	deinit();
 
-	if (contactEmail.empty() || publicKeyBase64.empty() || privateKeyBase64.empty()) {
-		ESP_LOGE(kTag, "init: missing VAPID keys or contact email");
+	if (vapidConfig.subject.empty() || vapidConfig.publicKeyBase64.empty() ||
+	    vapidConfig.privateKeyBase64.empty()) {
+		ESP_LOGE(kTag, "init: missing VAPID subject or keys");
 		return false;
 	}
 
@@ -50,21 +47,19 @@ bool ESPWebPush::init(
 	}
 
 	_config = config;
-	_vapidEmail = contactEmail;
-	_vapidPublicKey = publicKeyBase64;
-	_vapidPrivateKey = privateKeyBase64;
+	_vapidConfig = vapidConfig;
 	setNetworkValidator(config.networkValidator);
 
 	if (_config.worker.name.empty()) {
 		_config.worker.name = "webpush";
 	}
 
-	WebPushResult keyCheck{};
-	if (!validateVapidKeys(keyCheck)) {
+	WebPushResult configCheck{};
+	if (!validateVapidSubject(configCheck) || !validateVapidKeys(configCheck)) {
 		ESP_LOGE(
 		    kTag,
-		    "init: invalid VAPID keys (%s)",
-		    keyCheck.message ? keyCheck.message : "unknown"
+		    "init: invalid VAPID config (%s)",
+		    configCheck.message ? configCheck.message : "unknown"
 		);
 		return false;
 	}
@@ -75,7 +70,9 @@ bool ESPWebPush::init(
 		return false;
 	}
 
+	_deinitRequested.store(false, std::memory_order_release);
 	_stopRequested.store(false, std::memory_order_release);
+
 	TaskHandle_t workerTask = nullptr;
 	const char *taskName = _config.worker.name.empty() ? "webpush" : _config.worker.name.c_str();
 	const BaseType_t created = xTaskCreatePinnedToCore(
@@ -102,58 +99,68 @@ bool ESPWebPush::init(
 }
 
 void ESPWebPush::deinit() {
-	_initialized.store(false, std::memory_order_release);
 	_stopRequested.store(true, std::memory_order_release);
+	_deinitRequested.store(true, std::memory_order_release);
+	_initialized.store(false, std::memory_order_release);
 
 	TaskHandle_t workerTask = _workerTask.load(std::memory_order_acquire);
-	if (workerTask != nullptr) {
-		if (_queue != nullptr) {
-			QueueItem *wake = nullptr;
-			(void)xQueueSend(_queue, &wake, 0);
-		}
-		TickType_t start = xTaskGetTickCount();
-		while (_workerTask.load(std::memory_order_acquire) != nullptr &&
-		       (xTaskGetTickCount() - start) <= pdMS_TO_TICKS(2000)) {
+	if (workerTask != nullptr && _queue != nullptr) {
+		QueueItem *wake = nullptr;
+		(void)xQueueSend(_queue, &wake, 0);
+	}
+
+	if (workerTask != nullptr && xTaskGetCurrentTaskHandle() != workerTask) {
+		while (_workerTask.load(std::memory_order_acquire) != nullptr) {
 			vTaskDelay(pdMS_TO_TICKS(10));
-		}
-		workerTask = _workerTask.load(std::memory_order_acquire);
-		if (workerTask != nullptr) {
-			vTaskDelete(workerTask);
-			_workerTask.store(nullptr, std::memory_order_release);
 		}
 	}
 
+	failPendingQueueItems(WebPushError::ShuttingDown);
+
 	if (_queue) {
-		QueueItem *item = nullptr;
-		while (xQueueReceive(_queue, &item, 0) == pdTRUE) {
-			if (item) {
-				freeItem(item);
-			}
-		}
 		vQueueDelete(_queue);
 		_queue = nullptr;
 	}
 
 	deinitCrypto();
 
-	std::string().swap(_vapidPublicKey);
-	std::string().swap(_vapidPrivateKey);
-	std::string().swap(_vapidEmail);
+	{
+		std::lock_guard<std::mutex> guard(_jwtCacheMutex);
+		_jwtCache = {};
+	}
+
+	_vapidConfig = WebPushVapidConfig{};
 	setNetworkValidator(WebPushNetworkValidator{});
 	_config = WebPushConfig{};
 	_stopRequested.store(false, std::memory_order_release);
+	_deinitRequested.store(false, std::memory_order_release);
 }
 
-bool ESPWebPush::send(const PushMessage &msg, WebPushResultCB callback) {
+WebPushEnqueueResult ESPWebPush::send(const PushMessage &msg, WebPushResultCB callback) {
+	if (_stopRequested.load(std::memory_order_acquire)) {
+		ESP_LOGW(kTag, "send: shutting down");
+		return enqueueResultForError(WebPushError::ShuttingDown);
+	}
+
 	if (!isInitialized() || !_queue) {
 		ESP_LOGW(kTag, "send: not initialized");
-		return false;
+		return enqueueResultForError(WebPushError::NotInitialized);
+	}
+
+	WebPushResult validation{};
+	if (!validateMessage(msg, validation)) {
+		ESP_LOGW(
+		    kTag,
+		    "send: preflight validation failed (%s)",
+		    validation.message ? validation.message : "unknown"
+		);
+		return enqueueResultForError(validation.error);
 	}
 
 	QueueItem *item = allocateItem();
 	if (!item) {
 		ESP_LOGW(kTag, "send: out of memory");
-		return false;
+		return enqueueResultForError(WebPushError::OutOfMemory);
 	}
 
 	item->msg = msg;
@@ -164,47 +171,42 @@ bool ESPWebPush::send(const PushMessage &msg, WebPushResultCB callback) {
 	if (xQueueSend(_queue, &payload, waitTicks) != pdTRUE) {
 		ESP_LOGW(kTag, "send: queue full");
 		freeItem(item);
-		return false;
+		if (_stopRequested.load(std::memory_order_acquire)) {
+			return enqueueResultForError(WebPushError::ShuttingDown);
+		}
+		return enqueueResultForError(WebPushError::QueueFull);
 	}
 
-	return true;
+	return enqueueResultForError(WebPushError::None);
 }
 
 WebPushResult ESPWebPush::send(const PushMessage &msg) {
+	if (_stopRequested.load(std::memory_order_acquire)) {
+		return resultForError(WebPushError::ShuttingDown);
+	}
 	if (!isInitialized()) {
-		WebPushResult result{};
-		result.error = WebPushError::NotInitialized;
-		result.message = errorToString(result.error);
-		return result;
+		return resultForError(WebPushError::NotInitialized);
 	}
 	return handleMessage(msg);
 }
 
-bool ESPWebPush::send(
+WebPushEnqueueResult ESPWebPush::send(
     const Subscription &sub, const PushPayload &payload, WebPushResultCB callback
 ) {
-	if (!isInitialized() || !_queue) {
-		ESP_LOGW(kTag, "send: not initialized");
-		return false;
-	}
-
 	PushMessage message;
 	WebPushResult result{};
 	if (!buildMessage(sub, payload, message, result)) {
-		if (callback) {
-			callback(result);
-		}
-		return false;
+		return enqueueResultForError(result.error);
 	}
 	return send(message, std::move(callback));
 }
 
 WebPushResult ESPWebPush::send(const Subscription &sub, const PushPayload &payload) {
+	if (_stopRequested.load(std::memory_order_acquire)) {
+		return resultForError(WebPushError::ShuttingDown);
+	}
 	if (!isInitialized()) {
-		WebPushResult result{};
-		result.error = WebPushError::NotInitialized;
-		result.message = errorToString(result.error);
-		return result;
+		return resultForError(WebPushError::NotInitialized);
 	}
 
 	PushMessage message;
@@ -215,7 +217,7 @@ WebPushResult ESPWebPush::send(const Subscription &sub, const PushPayload &paylo
 	return send(message);
 }
 
-bool ESPWebPush::send(
+WebPushEnqueueResult ESPWebPush::send(
     const Subscription &sub, const JsonDocument &payload, WebPushResultCB callback
 ) {
 	return send(sub, payload.as<JsonVariantConst>(), std::move(callback));
@@ -225,29 +227,23 @@ WebPushResult ESPWebPush::send(const Subscription &sub, const JsonDocument &payl
 	return send(sub, payload.as<JsonVariantConst>());
 }
 
-bool ESPWebPush::send(const Subscription &sub, JsonVariantConst payload, WebPushResultCB callback) {
-	if (!isInitialized() || !_queue) {
-		ESP_LOGW(kTag, "send: not initialized");
-		return false;
-	}
-
+WebPushEnqueueResult ESPWebPush::send(
+    const Subscription &sub, JsonVariantConst payload, WebPushResultCB callback
+) {
 	PushMessage message;
 	WebPushResult result{};
 	if (!buildMessage(sub, payload, message, result)) {
-		if (callback) {
-			callback(result);
-		}
-		return false;
+		return enqueueResultForError(result.error);
 	}
 	return send(message, std::move(callback));
 }
 
 WebPushResult ESPWebPush::send(const Subscription &sub, JsonVariantConst payload) {
+	if (_stopRequested.load(std::memory_order_acquire)) {
+		return resultForError(WebPushError::ShuttingDown);
+	}
 	if (!isInitialized()) {
-		WebPushResult result{};
-		result.error = WebPushError::NotInitialized;
-		result.message = errorToString(result.error);
-		return result;
+		return resultForError(WebPushError::NotInitialized);
 	}
 
 	PushMessage message;
@@ -262,6 +258,20 @@ void ESPWebPush::setNetworkValidator(WebPushNetworkValidator validator) {
 	std::lock_guard<std::mutex> guard(_networkValidatorMutex);
 	_networkValidator = std::move(validator);
 	_config.networkValidator = _networkValidator;
+}
+
+WebPushEnqueueResult ESPWebPush::enqueueResultForError(WebPushError error) const {
+	WebPushEnqueueResult result{};
+	result.error = error;
+	result.message = errorToString(error);
+	return result;
+}
+
+WebPushResult ESPWebPush::resultForError(WebPushError error) const {
+	WebPushResult result{};
+	result.error = error;
+	result.message = errorToString(error);
+	return result;
 }
 
 const char *ESPWebPush::errorToString(WebPushError error) const {
@@ -282,6 +292,10 @@ const char *ESPWebPush::errorToString(WebPushError error) const {
 		return "queue full";
 	case WebPushError::OutOfMemory:
 		return "out of memory";
+	case WebPushError::PayloadTooLarge:
+		return "payload too large";
+	case WebPushError::ShuttingDown:
+		return "shutting down";
 	case WebPushError::CryptoInitFailed:
 		return "crypto init failed";
 	case WebPushError::EncryptFailed:
@@ -342,39 +356,43 @@ bool ESPWebPush::buildMessage(
 
 WebPushResult ESPWebPush::handleMessage(const PushMessage &msg) {
 	WebPushResult result{};
-	if (!validateSubscription(msg.sub, result)) {
+	if (!validateMessage(msg, result)) {
 		return result;
 	}
 
 	for (uint8_t attempt = 0; attempt <= _config.maxRetries; ++attempt) {
+		if (_stopRequested.load(std::memory_order_acquire)) {
+			return resultForError(WebPushError::ShuttingDown);
+		}
+
 		if (!isNetworkReadyForPush()) {
 			result.error = WebPushError::NetworkUnavailable;
 			result.message = errorToString(result.error);
 			if (attempt >= _config.maxRetries) {
 				return result;
 			}
-			vTaskDelay(pdMS_TO_TICKS(calcRetryDelayMs(attempt)));
+			if (!waitForStopAwareDelay(calcRetryDelayMs(attempt))) {
+				return resultForError(WebPushError::ShuttingDown);
+			}
 			continue;
 		}
 
-		std::string salt;
-		std::string serverKey;
-		std::vector<uint8_t> ciphertext = encryptPayload(msg.payload, msg.sub, salt, serverKey);
-		if (ciphertext.empty()) {
+		std::vector<uint8_t> body = encryptPayload(msg.payload, msg.sub);
+		if (body.empty()) {
 			result.error = WebPushError::EncryptFailed;
 			result.message = errorToString(result.error);
 			return result;
 		}
 
-		std::string aud = endpointOrigin(msg.sub.endpoint);
-		std::string jwt = generateVapidJWT(aud, "mailto:" + _vapidEmail, _vapidPrivateKey);
+		const std::string aud = endpointOrigin(msg.sub.endpoint);
+		const std::string jwt = jwtForAudience(aud);
 		if (jwt.empty()) {
 			result.error = WebPushError::JwtFailed;
 			result.message = errorToString(result.error);
 			return result;
 		}
 
-		WebPushResult request = sendPushRequest(msg.sub.endpoint, jwt, salt, serverKey, ciphertext);
+		WebPushResult request = sendPushRequest(msg.sub.endpoint, jwt, body);
 		if (request.ok()) {
 			return request;
 		}
@@ -384,7 +402,9 @@ WebPushResult ESPWebPush::handleMessage(const PushMessage &msg) {
 			return result;
 		}
 
-		vTaskDelay(pdMS_TO_TICKS(calcRetryDelayMs(attempt)));
+		if (!waitForStopAwareDelay(calcRetryDelayMs(attempt))) {
+			return resultForError(WebPushError::ShuttingDown);
+		}
 	}
 
 	result.error = WebPushError::InternalError;
@@ -425,6 +445,24 @@ bool ESPWebPush::shouldRetry(const WebPushResult &result) const {
 	return false;
 }
 
+bool ESPWebPush::waitForStopAwareDelay(uint32_t delayMs) const {
+	if (delayMs == 0) {
+		return !_stopRequested.load(std::memory_order_acquire);
+	}
+
+	TickType_t remaining = pdMS_TO_TICKS(delayMs);
+	while (remaining > 0) {
+		if (_stopRequested.load(std::memory_order_acquire)) {
+			return false;
+		}
+		TickType_t slice = remaining > kStopDelaySliceTicks ? kStopDelaySliceTicks : remaining;
+		vTaskDelay(slice);
+		remaining -= slice;
+	}
+
+	return !_stopRequested.load(std::memory_order_acquire);
+}
+
 uint32_t ESPWebPush::calcRetryDelayMs(uint8_t attempt) const {
 	if (_config.retryBaseDelayMs == 0) {
 		return 0;
@@ -445,24 +483,49 @@ bool ESPWebPush::validateSubscription(const Subscription &sub, WebPushResult &re
 	return true;
 }
 
+bool ESPWebPush::validatePayloadSize(const std::string &payload, WebPushResult &result) const {
+	if (_config.maxPayloadBytes != 0 && payload.size() > _config.maxPayloadBytes) {
+		result.error = WebPushError::PayloadTooLarge;
+		result.message = errorToString(result.error);
+		return false;
+	}
+	return true;
+}
+
+bool ESPWebPush::validateMessage(const PushMessage &msg, WebPushResult &result) const {
+	if (!validateSubscription(msg.sub, result)) {
+		return false;
+	}
+	return validatePayloadSize(msg.payload, result);
+}
+
+bool ESPWebPush::validateVapidSubject(WebPushResult &result) const {
+	if (_vapidConfig.subject.rfind("mailto:", 0) == 0 ||
+	    _vapidConfig.subject.rfind("https://", 0) == 0) {
+		return true;
+	}
+	result.error = WebPushError::InvalidConfig;
+	result.message = errorToString(result.error);
+	return false;
+}
+
 bool ESPWebPush::validateVapidKeys(WebPushResult &result) {
 	std::vector<uint8_t> pubKey;
 	std::vector<uint8_t> privKey;
-	if (!base64UrlDecode(_vapidPublicKey, pubKey) || !base64UrlDecode(_vapidPrivateKey, privKey)) {
+	if (!decodeP256PublicKey(_vapidConfig.publicKeyBase64, pubKey) ||
+	    !decodeP256PrivateKey(_vapidConfig.privateKeyBase64, privKey)) {
 		result.error = WebPushError::InvalidVapidKeys;
 		result.message = errorToString(result.error);
 		return false;
 	}
-	if (pubKey.size() != 65 || pubKey[0] != 0x04) {
+
+	std::vector<uint8_t> derivedPublicKey;
+	if (!deriveP256PublicKey(privKey, derivedPublicKey) || derivedPublicKey != pubKey) {
 		result.error = WebPushError::InvalidVapidKeys;
 		result.message = errorToString(result.error);
 		return false;
 	}
-	if (privKey.size() != 32) {
-		result.error = WebPushError::InvalidVapidKeys;
-		result.message = errorToString(result.error);
-		return false;
-	}
+
 	return true;
 }
 
@@ -503,21 +566,48 @@ void ESPWebPush::freeItem(QueueItem *item) {
 	heap_caps_free(item);
 }
 
+void ESPWebPush::failPendingQueueItems(WebPushError error) {
+	if (!_queue) {
+		return;
+	}
+
+	WebPushResult result = resultForError(error);
+	QueueItem *item = nullptr;
+	while (xQueueReceive(_queue, &item, 0) == pdTRUE) {
+		if (!item) {
+			continue;
+		}
+		if (item->callback) {
+			item->callback(result);
+		}
+		freeItem(item);
+	}
+}
+
 void ESPWebPush::workerLoop() {
-	while (!_stopRequested.load(std::memory_order_acquire)) {
+	while (true) {
+		if (_stopRequested.load(std::memory_order_acquire)) {
+			break;
+		}
+
 		QueueItem *item = nullptr;
 		if (xQueueReceive(_queue, &item, kWorkerPollTicks) != pdTRUE) {
 			continue;
 		}
 		if (!item) {
+			if (_stopRequested.load(std::memory_order_acquire)) {
+				break;
+			}
 			continue;
 		}
+
 		WebPushResult result = handleMessage(item->msg);
 		if (item->callback) {
 			item->callback(result);
 		}
 		freeItem(item);
 	}
+
 	_workerTask.store(nullptr, std::memory_order_release);
 	vTaskDelete(nullptr);
 }

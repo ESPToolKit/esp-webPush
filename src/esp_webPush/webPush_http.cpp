@@ -16,11 +16,7 @@ void ESPWebPush::printHeaderErr(esp_err_t headErr, const char *headKey) const {
 }
 
 WebPushResult ESPWebPush::sendPushRequest(
-    const std::string &endpoint,
-    const std::string &jwt,
-    const std::string &salt,
-    const std::string &serverPublicKey,
-    const std::vector<uint8_t> &ciphertext
+    const std::string &endpoint, const std::string &jwt, const std::vector<uint8_t> &body
 ) {
 	WebPushResult result{};
 	if (endpoint.empty()) {
@@ -33,7 +29,7 @@ WebPushResult ESPWebPush::sendPushRequest(
 	config.url = endpoint.c_str();
 	config.method = HTTP_METHOD_POST;
 	config.timeout_ms = static_cast<int>(_config.requestTimeoutMs);
-	config.buffer_size_tx = 6048;
+	config.buffer_size_tx = 6144;
 
 	esp_http_client_handle_t client = esp_http_client_init(&config);
 	if (!client) {
@@ -42,10 +38,9 @@ WebPushResult ESPWebPush::sendPushRequest(
 		return result;
 	}
 
-	std::string authHeader = "vapid t=" + jwt + ", k=" + _vapidPublicKey;
-	std::string cryptoKeyHeader = "dh=" + serverPublicKey + ";p256ecdsa=" + _vapidPublicKey;
-	std::string encryptionHeader = "salt=" + salt;
-	std::string ttlValue = std::to_string(_config.ttlSeconds);
+	const std::string authHeader =
+	    "vapid t=" + jwt + ", k=" + _vapidConfig.publicKeyBase64;
+	const std::string ttlValue = std::to_string(_config.ttlSeconds);
 
 	printHeaderErr(
 	    esp_http_client_set_header(client, "Authorization", authHeader.c_str()),
@@ -53,30 +48,22 @@ WebPushResult ESPWebPush::sendPushRequest(
 	);
 	printHeaderErr(esp_http_client_set_header(client, "TTL", ttlValue.c_str()), "TTL");
 	printHeaderErr(
-	    esp_http_client_set_header(client, "Content-Encoding", "aesgcm"),
+	    esp_http_client_set_header(client, "Content-Encoding", "aes128gcm"),
 	    "Content-Encoding"
 	);
 	printHeaderErr(
 	    esp_http_client_set_header(client, "Content-Type", "application/octet-stream"),
 	    "Content-Type"
 	);
-	printHeaderErr(
-	    esp_http_client_set_header(client, "Encryption", encryptionHeader.c_str()),
-	    "Encryption"
-	);
-	printHeaderErr(
-	    esp_http_client_set_header(client, "Crypto-Key", cryptoKeyHeader.c_str()),
-	    "Crypto-Key"
-	);
 
 	esp_http_client_set_post_field(
 	    client,
-	    reinterpret_cast<const char *>(ciphertext.data()),
-	    ciphertext.size()
+	    reinterpret_cast<const char *>(body.data()),
+	    static_cast<int>(body.size())
 	);
 
-	esp_err_t err = esp_http_client_perform(client);
-	int statusCode = esp_http_client_get_status_code(client);
+	const esp_err_t err = esp_http_client_perform(client);
+	const int statusCode = esp_http_client_get_status_code(client);
 
 	result.transportError = err;
 	result.statusCode = statusCode;

@@ -8,12 +8,20 @@ extern "C" {
 #include "mbedtls/cipher.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/ecdh.h"
+#include "mbedtls/ecp.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/md.h"
 }
 
 namespace {
 constexpr const char *kTag = "ESPWebPush";
+
+void appendUint32(std::vector<uint8_t> &buffer, uint32_t value) {
+	buffer.push_back(static_cast<uint8_t>((value >> 24) & 0xFF));
+	buffer.push_back(static_cast<uint8_t>((value >> 16) & 0xFF));
+	buffer.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
+	buffer.push_back(static_cast<uint8_t>(value & 0xFF));
+}
 } // namespace
 
 struct ESPWebPush::CryptoState {
@@ -48,6 +56,7 @@ bool ESPWebPush::initCrypto() {
 	if (_crypto->initialized) {
 		return true;
 	}
+
 	const char *pers = "espwebpush_drbg";
 	int ret = mbedtls_ctr_drbg_seed(
 	    &(_crypto->ctrDrbg),
@@ -60,6 +69,7 @@ bool ESPWebPush::initCrypto() {
 		ESP_LOGE(kTag, "initCrypto: failed to seed DRBG: -0x%04x", -ret);
 		return false;
 	}
+
 	_crypto->initialized = true;
 	return true;
 }
@@ -69,7 +79,7 @@ void ESPWebPush::deinitCrypto() {
 	_crypto.reset();
 }
 
-bool ESPWebPush::generateSalt(uint8_t *saltBin, std::string &saltOut) {
+bool ESPWebPush::generateSalt(uint8_t *saltBin) {
 	if (!_crypto || !_crypto->initialized) {
 		ESP_LOGE(kTag, "generateSalt: crypto not initialized");
 		return false;
@@ -78,198 +88,229 @@ bool ESPWebPush::generateSalt(uint8_t *saltBin, std::string &saltOut) {
 		ESP_LOGE(kTag, "generateSalt: failed to generate salt");
 		return false;
 	}
-	saltOut = base64UrlEncode(saltBin, 16);
-	return !saltOut.empty();
+	return true;
 }
 
-bool ESPWebPush::generateECDHContext(
-    const std::vector<uint8_t> &userPubKey,
-    uint8_t *sharedSecret,
-    uint8_t *serverPubKey,
-    size_t &pubLen,
-    std::string &publicServerKey
-) {
-	if (!_crypto || !_crypto->initialized) {
-		ESP_LOGE(kTag, "generateECDHContext: crypto not initialized");
+bool ESPWebPush::decodeP256PublicKey(const std::string &keyBase64, std::vector<uint8_t> &output)
+    const {
+	if (!base64UrlDecode(keyBase64, output) || output.size() != 65 || output[0] != 0x04) {
+		output.clear();
+		return false;
+	}
+	return true;
+}
+
+bool ESPWebPush::decodeP256PrivateKey(const std::string &keyBase64, std::vector<uint8_t> &output)
+    const {
+	if (!base64UrlDecode(keyBase64, output) || output.size() != 32) {
+		output.clear();
+		return false;
+	}
+	return true;
+}
+
+bool ESPWebPush::deriveP256PublicKey(
+    const std::vector<uint8_t> &privateKey, std::vector<uint8_t> &publicKeyOut
+) const {
+	if (privateKey.size() != 32) {
 		return false;
 	}
 
 	bool success = false;
-	mbedtls_ecdh_context ecdh;
-	mbedtls_ecdh_init(&ecdh);
-
-	mbedtls_ecp_group grp;
+	mbedtls_ecp_group group;
 	mbedtls_mpi d;
-	mbedtls_mpi z;
-	mbedtls_ecp_point Q;
-	mbedtls_ecp_point Qp;
+	mbedtls_ecp_point q;
 
-	mbedtls_ecp_group_init(&grp);
+	mbedtls_ecp_group_init(&group);
 	mbedtls_mpi_init(&d);
-	mbedtls_mpi_init(&z);
-	mbedtls_ecp_point_init(&Q);
-	mbedtls_ecp_point_init(&Qp);
+	mbedtls_ecp_point_init(&q);
 
 	do {
-		if (mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1) != 0) {
-			ESP_LOGE(kTag, "ECDH: failed to load curve");
+		if (mbedtls_ecp_group_load(&group, MBEDTLS_ECP_DP_SECP256R1) != 0) {
 			break;
 		}
-		if (mbedtls_ecdh_setup(&ecdh, MBEDTLS_ECP_DP_SECP256R1) != 0) {
-			ESP_LOGE(kTag, "ECDH: failed to setup context");
+		if (mbedtls_mpi_read_binary(&d, privateKey.data(), privateKey.size()) != 0) {
 			break;
 		}
-		if (mbedtls_ecdh_gen_public(&grp, &d, &Q, mbedtls_ctr_drbg_random, &(_crypto->ctrDrbg)) !=
-		    0) {
-			ESP_LOGE(kTag, "ECDH: failed to generate public key");
+		if (mbedtls_ecp_check_privkey(&group, &d) != 0) {
 			break;
 		}
-		if (mbedtls_ecp_point_read_binary(&grp, &Qp, userPubKey.data(), userPubKey.size()) != 0) {
-			ESP_LOGE(kTag, "ECDH: failed to read user public key");
+		if (mbedtls_ecp_mul(&group, &q, &d, &group.G, nullptr, nullptr) != 0) {
 			break;
 		}
-		if (mbedtls_ecp_check_pubkey(&grp, &Qp) != 0) {
-			ESP_LOGE(kTag, "ECDH: user public key invalid");
+		if (mbedtls_ecp_check_pubkey(&group, &q) != 0) {
 			break;
 		}
-		if (mbedtls_ecdh_compute_shared(
-		        &grp,
-		        &z,
-		        &Qp,
-		        &d,
-		        mbedtls_ctr_drbg_random,
-		        &(_crypto->ctrDrbg)
-		    ) != 0) {
-			ESP_LOGE(kTag, "ECDH: failed to compute shared secret");
-			break;
-		}
-		size_t zLen = mbedtls_mpi_size(&z);
-		if (zLen == 0 || zLen > 32) {
-			ESP_LOGE(kTag, "ECDH: shared secret length invalid (%u)", static_cast<unsigned>(zLen));
-			break;
-		}
-		memset(sharedSecret, 0, 32);
-		if (mbedtls_mpi_write_binary(&z, sharedSecret, 32) != 0) {
-			ESP_LOGE(kTag, "ECDH: failed to write shared secret");
-			break;
-		}
+
+		publicKeyOut.assign(65, 0);
+		size_t actualLen = 0;
 		if (mbedtls_ecp_point_write_binary(
-		        &grp,
-		        &Q,
+		        &group,
+		        &q,
 		        MBEDTLS_ECP_PF_UNCOMPRESSED,
-		        &pubLen,
-		        serverPubKey,
-		        65
+		        &actualLen,
+		        publicKeyOut.data(),
+		        publicKeyOut.size()
 		    ) != 0) {
-			ESP_LOGE(kTag, "ECDH: failed to write ephemeral public key");
+			publicKeyOut.clear();
 			break;
 		}
-		if (pubLen != 65 || serverPubKey[0] != 0x04) {
-			ESP_LOGE(kTag, "ECDH: invalid ephemeral public key");
+		if (actualLen != 65 || publicKeyOut[0] != 0x04) {
+			publicKeyOut.clear();
 			break;
 		}
-		publicServerKey = base64UrlEncode(serverPubKey, 65);
-		success = !publicServerKey.empty();
+		success = true;
 	} while (false);
 
-	mbedtls_ecdh_free(&ecdh);
+	mbedtls_ecp_point_free(&q);
 	mbedtls_mpi_free(&d);
-	mbedtls_mpi_free(&z);
-	mbedtls_ecp_point_free(&Q);
-	mbedtls_ecp_point_free(&Qp);
-	mbedtls_ecp_group_free(&grp);
+	mbedtls_ecp_group_free(&group);
 
 	return success;
 }
 
-bool ESPWebPush::deriveKeys(
+bool ESPWebPush::generateECDHContext(
+    const std::vector<uint8_t> &privateKey, std::vector<uint8_t> &publicKeyOut
+) {
+	if (privateKey.size() != 32) {
+		ESP_LOGE(kTag, "generateECDHContext: private key length invalid");
+		return false;
+	}
+	return deriveP256PublicKey(privateKey, publicKeyOut);
+}
+
+bool ESPWebPush::deriveSharedSecret(
+    const std::vector<uint8_t> &peerPublicKey,
+    const std::vector<uint8_t> &privateKey,
+    uint8_t *sharedSecret
+) {
+	if (peerPublicKey.size() != 65 || peerPublicKey[0] != 0x04 || privateKey.size() != 32 ||
+	    sharedSecret == nullptr) {
+		return false;
+	}
+
+	bool success = false;
+	mbedtls_ecp_group group;
+	mbedtls_mpi d;
+	mbedtls_mpi z;
+	mbedtls_ecp_point q;
+
+	mbedtls_ecp_group_init(&group);
+	mbedtls_mpi_init(&d);
+	mbedtls_mpi_init(&z);
+	mbedtls_ecp_point_init(&q);
+
+	do {
+		if (mbedtls_ecp_group_load(&group, MBEDTLS_ECP_DP_SECP256R1) != 0) {
+			break;
+		}
+		if (mbedtls_mpi_read_binary(&d, privateKey.data(), privateKey.size()) != 0) {
+			break;
+		}
+		if (mbedtls_ecp_check_privkey(&group, &d) != 0) {
+			break;
+		}
+		if (mbedtls_ecp_point_read_binary(&group, &q, peerPublicKey.data(), peerPublicKey.size()) !=
+		    0) {
+			break;
+		}
+		if (mbedtls_ecp_check_pubkey(&group, &q) != 0) {
+			break;
+		}
+		if (mbedtls_ecdh_compute_shared(
+		        &group,
+		        &z,
+		        &q,
+		        &d,
+		        mbedtls_ctr_drbg_random,
+		        _crypto ? &(_crypto->ctrDrbg) : nullptr
+		    ) != 0) {
+			break;
+		}
+		memset(sharedSecret, 0, 32);
+		if (mbedtls_mpi_write_binary(&z, sharedSecret, 32) != 0) {
+			break;
+		}
+		success = true;
+	} while (false);
+
+	mbedtls_ecp_point_free(&q);
+	mbedtls_mpi_free(&z);
+	mbedtls_mpi_free(&d);
+	mbedtls_ecp_group_free(&group);
+
+	return success;
+}
+
+bool ESPWebPush::deriveInputKeyingMaterial(
     const uint8_t *authSecret,
     size_t authSecretLen,
-    const uint8_t *salt,
     const uint8_t *sharedSecret,
-    uint8_t *cek,
-    uint8_t *nonce,
     const uint8_t *clientPubKey,
     size_t clientPubKeyLen,
     const uint8_t *serverPubKey,
-    size_t serverPubKeyLen
-) {
+    size_t serverPubKeyLen,
+    uint8_t *ikm
+) const {
 	const mbedtls_md_info_t *md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-	if (!md) {
-		ESP_LOGE(kTag, "deriveKeys: SHA-256 not supported");
+	if (!md || !authSecret || !sharedSecret || !clientPubKey || !serverPubKey || !ikm) {
+		return false;
+	}
+
+	uint8_t prkKey[32];
+	std::vector<uint8_t> keyInfo;
+	const char *label = "WebPush: info";
+	keyInfo.reserve(strlen(label) + 1 + clientPubKeyLen + serverPubKeyLen + 1);
+	keyInfo.insert(keyInfo.end(), label, label + strlen(label));
+	keyInfo.push_back(0x00);
+	keyInfo.insert(keyInfo.end(), clientPubKey, clientPubKey + clientPubKeyLen);
+	keyInfo.insert(keyInfo.end(), serverPubKey, serverPubKey + serverPubKeyLen);
+	keyInfo.push_back(0x01);
+
+	if (mbedtls_md_hmac(md, authSecret, authSecretLen, sharedSecret, 32, prkKey) != 0) {
+		return false;
+	}
+	return mbedtls_md_hmac(md, prkKey, sizeof(prkKey), keyInfo.data(), keyInfo.size(), ikm) == 0;
+}
+
+bool ESPWebPush::deriveContentEncryptionKeyAndNonce(
+    const uint8_t *salt, const uint8_t *ikm, uint8_t *cek, uint8_t *nonce
+) const {
+	const mbedtls_md_info_t *md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+	if (!md || !salt || !ikm || !cek || !nonce) {
 		return false;
 	}
 
 	uint8_t prk[32];
-	uint8_t ms[32];
-	std::vector<uint8_t> authInfo;
-	authInfo.reserve(23);
-	const char *authLabel = "Content-Encoding: auth";
-	authInfo.insert(authInfo.end(), authLabel, authLabel + strlen(authLabel));
-	authInfo.push_back(0x00);
-	authInfo.push_back(0x01);
+	uint8_t cekFull[32];
+	uint8_t nonceFull[32];
 
-	if (mbedtls_md_hmac(md, authSecret, authSecretLen, sharedSecret, 32, prk) != 0) {
-		ESP_LOGE(kTag, "deriveKeys: failed to compute PRK");
-		return false;
-	}
-	if (mbedtls_md_hmac(md, prk, 32, authInfo.data(), authInfo.size(), ms) != 0) {
-		ESP_LOGE(kTag, "deriveKeys: failed to compute MS");
-		return false;
-	}
-
-	std::vector<uint8_t> context;
-	context.reserve(141);
-	const char *contextLabel = "P-256";
-	context.insert(context.end(), contextLabel, contextLabel + strlen(contextLabel));
-	context.push_back(0x00);
-	uint16_t clientLen = static_cast<uint16_t>(clientPubKeyLen);
-	context.push_back((clientLen >> 8) & 0xFF);
-	context.push_back(clientLen & 0xFF);
-	context.insert(context.end(), clientPubKey, clientPubKey + clientPubKeyLen);
-	uint16_t serverLen = static_cast<uint16_t>(serverPubKeyLen);
-	context.push_back((serverLen >> 8) & 0xFF);
-	context.push_back(serverLen & 0xFF);
-	context.insert(context.end(), serverPubKey, serverPubKey + serverPubKeyLen);
-
+	const char *cekLabel = "Content-Encoding: aes128gcm";
 	std::vector<uint8_t> cekInfo;
-	cekInfo.reserve(165);
-	const char *cekLabel = "Content-Encoding: aesgcm";
+	cekInfo.reserve(strlen(cekLabel) + 2);
 	cekInfo.insert(cekInfo.end(), cekLabel, cekLabel + strlen(cekLabel));
 	cekInfo.push_back(0x00);
-	cekInfo.insert(cekInfo.end(), context.begin(), context.end());
 	cekInfo.push_back(0x01);
-	uint8_t prkCek[32];
-	uint8_t cekFull[32];
-	if (mbedtls_md_hmac(md, salt, 16, ms, 32, prkCek) != 0) {
-		ESP_LOGE(kTag, "deriveKeys: failed to compute PRK_CEK");
-		return false;
-	}
-	if (mbedtls_md_hmac(md, prkCek, 32, cekInfo.data(), cekInfo.size(), cekFull) != 0) {
-		ESP_LOGE(kTag, "deriveKeys: failed to derive CEK");
-		return false;
-	}
-	memcpy(cek, cekFull, 16);
 
-	std::vector<uint8_t> nonceInfo;
-	nonceInfo.reserve(164);
 	const char *nonceLabel = "Content-Encoding: nonce";
+	std::vector<uint8_t> nonceInfo;
+	nonceInfo.reserve(strlen(nonceLabel) + 2);
 	nonceInfo.insert(nonceInfo.end(), nonceLabel, nonceLabel + strlen(nonceLabel));
 	nonceInfo.push_back(0x00);
-	nonceInfo.insert(nonceInfo.end(), context.begin(), context.end());
 	nonceInfo.push_back(0x01);
-	uint8_t prkNonce[32];
-	uint8_t nonceFull[32];
-	if (mbedtls_md_hmac(md, salt, 16, ms, 32, prkNonce) != 0) {
-		ESP_LOGE(kTag, "deriveKeys: failed to compute PRK_nonce");
-		return false;
-	}
-	if (mbedtls_md_hmac(md, prkNonce, 32, nonceInfo.data(), nonceInfo.size(), nonceFull) != 0) {
-		ESP_LOGE(kTag, "deriveKeys: failed to derive nonce");
-		return false;
-	}
-	memcpy(nonce, nonceFull, 12);
 
+	if (mbedtls_md_hmac(md, salt, 16, ikm, 32, prk) != 0) {
+		return false;
+	}
+	if (mbedtls_md_hmac(md, prk, sizeof(prk), cekInfo.data(), cekInfo.size(), cekFull) != 0) {
+		return false;
+	}
+	if (mbedtls_md_hmac(md, prk, sizeof(prk), nonceInfo.data(), nonceInfo.size(), nonceFull) != 0) {
+		return false;
+	}
+
+	memcpy(cek, cekFull, 16);
+	memcpy(nonce, nonceFull, 12);
 	return true;
 }
 
@@ -292,27 +333,22 @@ bool ESPWebPush::encryptWithAESGCM(
 	mbedtls_cipher_init(&cipher);
 	if (mbedtls_cipher_setup(&cipher, mbedtls_cipher_info_from_type(MBEDTLS_CIPHER_AES_128_GCM)) !=
 	    0) {
-		ESP_LOGE(kTag, "encryptWithAESGCM: cipher setup failed");
 		mbedtls_cipher_free(&cipher);
 		return false;
 	}
 	if (mbedtls_cipher_setkey(&cipher, cek, 128, MBEDTLS_ENCRYPT) != 0) {
-		ESP_LOGE(kTag, "encryptWithAESGCM: set key failed");
 		mbedtls_cipher_free(&cipher);
 		return false;
 	}
 	if (mbedtls_cipher_set_iv(&cipher, nonce, 12) != 0) {
-		ESP_LOGE(kTag, "encryptWithAESGCM: set IV failed");
 		mbedtls_cipher_free(&cipher);
 		return false;
 	}
 	if (mbedtls_cipher_reset(&cipher) != 0) {
-		ESP_LOGE(kTag, "encryptWithAESGCM: reset failed");
 		mbedtls_cipher_free(&cipher);
 		return false;
 	}
 	if (mbedtls_cipher_update_ad(&cipher, nullptr, 0) != 0) {
-		ESP_LOGE(kTag, "encryptWithAESGCM: update AD failed");
 		mbedtls_cipher_free(&cipher);
 		return false;
 	}
@@ -325,111 +361,140 @@ bool ESPWebPush::encryptWithAESGCM(
 	        output.data(),
 	        &olen
 	    ) != 0) {
-		ESP_LOGE(kTag, "encryptWithAESGCM: encrypt failed");
 		mbedtls_cipher_free(&cipher);
 		return false;
 	}
 	outputLen = olen;
 
 	if (mbedtls_cipher_finish(&cipher, output.data() + outputLen, &olen) != 0) {
-		ESP_LOGE(kTag, "encryptWithAESGCM: finish failed");
 		mbedtls_cipher_free(&cipher);
 		return false;
 	}
 	outputLen += olen;
 
-	if (mbedtls_cipher_write_tag(&cipher, tag, 16) != 0) {
-		ESP_LOGE(kTag, "encryptWithAESGCM: write tag failed");
+	if (mbedtls_cipher_write_tag(&cipher, tag, sizeof(tag)) != 0) {
 		mbedtls_cipher_free(&cipher);
 		return false;
 	}
 
-	output.resize(outputLen + 16);
-	memcpy(output.data() + outputLen, tag, 16);
-
+	output.resize(outputLen + sizeof(tag));
+	memcpy(output.data() + outputLen, tag, sizeof(tag));
 	ciphertextOut = std::move(output);
 	mbedtls_cipher_free(&cipher);
 	return true;
 }
 
-std::vector<uint8_t> ESPWebPush::encryptPayload(
+bool ESPWebPush::buildRecordBody(
+    const uint8_t *salt,
+    uint32_t recordSize,
+    const uint8_t *serverPubKey,
+    size_t serverPubKeyLen,
     const std::string &plaintext,
-    const Subscription &sub,
-    std::string &salt,
-    std::string &publicServerKey
+    const uint8_t *cek,
+    const uint8_t *nonce,
+    std::vector<uint8_t> &bodyOut
 ) {
+	if (!salt || !serverPubKey || !cek || !nonce || serverPubKeyLen > 0xFF) {
+		return false;
+	}
+
+	std::string recordPlaintext = plaintext;
+	recordPlaintext.push_back(static_cast<char>(0x02));
+
+	std::vector<uint8_t> ciphertext;
+	if (!encryptWithAESGCM(recordPlaintext, cek, nonce, ciphertext)) {
+		return false;
+	}
+
+	bodyOut.clear();
+	bodyOut.reserve(16 + 4 + 1 + serverPubKeyLen + ciphertext.size());
+	bodyOut.insert(bodyOut.end(), salt, salt + 16);
+	appendUint32(bodyOut, recordSize);
+	bodyOut.push_back(static_cast<uint8_t>(serverPubKeyLen));
+	bodyOut.insert(bodyOut.end(), serverPubKey, serverPubKey + serverPubKeyLen);
+	bodyOut.insert(bodyOut.end(), ciphertext.begin(), ciphertext.end());
+	return true;
+}
+
+std::vector<uint8_t> ESPWebPush::encryptPayload(const std::string &plaintext, const Subscription &sub) {
 	std::lock_guard<std::mutex> guard(_cryptoMutex);
 	if (!initCrypto()) {
 		return {};
 	}
 
-	uint8_t saltBin[16];
-	uint8_t sharedSecret[32];
-	uint8_t serverPubKey[65];
-	size_t pubLen = 0;
-	uint8_t cek[16];
-	uint8_t nonce[12];
-
 	std::vector<uint8_t> userPubKey;
-	if (!base64UrlDecode(sub.p256dh, userPubKey) || userPubKey.empty()) {
-		ESP_LOGE(kTag, "encryptPayload: failed to decode client public key");
-		return {};
-	}
-	if (userPubKey.size() != 65 || userPubKey[0] != 0x04) {
+	if (!decodeP256PublicKey(sub.p256dh, userPubKey)) {
 		ESP_LOGE(kTag, "encryptPayload: client public key invalid");
 		return {};
 	}
 
-	std::vector<uint8_t> authSecretBin;
-	if (!base64UrlDecode(sub.auth, authSecretBin) || authSecretBin.empty()) {
-		ESP_LOGE(kTag, "encryptPayload: failed to decode auth secret");
-		return {};
-	}
-	if (authSecretBin.size() != 16) {
-		ESP_LOGE(
-		    kTag,
-		    "encryptPayload: auth secret length invalid (%u)",
-		    static_cast<unsigned>(authSecretBin.size())
-		);
+	std::vector<uint8_t> authSecret;
+	if (!base64UrlDecode(sub.auth, authSecret) || authSecret.size() != 16) {
+		ESP_LOGE(kTag, "encryptPayload: auth secret invalid");
 		return {};
 	}
 
-	if (!generateSalt(saltBin, salt)) {
+	std::vector<uint8_t> serverPrivateKey(32, 0);
+	if (mbedtls_ctr_drbg_random(&(_crypto->ctrDrbg), serverPrivateKey.data(), serverPrivateKey.size()) !=
+	    0) {
+		ESP_LOGE(kTag, "encryptPayload: failed to generate ephemeral private key");
+		return {};
+	}
+
+	std::vector<uint8_t> serverPublicKey;
+	if (!generateECDHContext(serverPrivateKey, serverPublicKey)) {
+		ESP_LOGE(kTag, "encryptPayload: failed to derive ephemeral public key");
+		return {};
+	}
+
+	uint8_t sharedSecret[32];
+	if (!deriveSharedSecret(userPubKey, serverPrivateKey, sharedSecret)) {
+		ESP_LOGE(kTag, "encryptPayload: failed to derive shared secret");
+		return {};
+	}
+
+	uint8_t ikm[32];
+	if (!deriveInputKeyingMaterial(
+	        authSecret.data(),
+	        authSecret.size(),
+	        sharedSecret,
+	        userPubKey.data(),
+	        userPubKey.size(),
+	        serverPublicKey.data(),
+	        serverPublicKey.size(),
+	        ikm
+	    )) {
+		ESP_LOGE(kTag, "encryptPayload: failed to derive input keying material");
+		return {};
+	}
+
+	uint8_t salt[16];
+	if (!generateSalt(salt)) {
 		ESP_LOGE(kTag, "encryptPayload: failed to generate salt");
 		return {};
 	}
 
-	if (!generateECDHContext(userPubKey, sharedSecret, serverPubKey, pubLen, publicServerKey)) {
-		ESP_LOGE(kTag, "encryptPayload: failed to generate ECDH context");
+	uint8_t cek[16];
+	uint8_t nonce[12];
+	if (!deriveContentEncryptionKeyAndNonce(salt, ikm, cek, nonce)) {
+		ESP_LOGE(kTag, "encryptPayload: failed to derive content key and nonce");
 		return {};
 	}
 
-	if (!deriveKeys(
-	        authSecretBin.data(),
-	        authSecretBin.size(),
-	        saltBin,
-	        sharedSecret,
+	std::vector<uint8_t> body;
+	if (!buildRecordBody(
+	        salt,
+	        kDefaultRecordSize,
+	        serverPublicKey.data(),
+	        serverPublicKey.size(),
+	        plaintext,
 	        cek,
 	        nonce,
-	        userPubKey.data(),
-	        userPubKey.size(),
-	        serverPubKey,
-	        pubLen
+	        body
 	    )) {
-		ESP_LOGE(kTag, "encryptPayload: failed to derive keys");
+		ESP_LOGE(kTag, "encryptPayload: failed to build encrypted body");
 		return {};
 	}
 
-	std::string paddedPlaintext;
-	paddedPlaintext.push_back(0x00);
-	paddedPlaintext.push_back(0x00);
-	paddedPlaintext.append(plaintext);
-
-	std::vector<uint8_t> ciphertext;
-	if (!encryptWithAESGCM(paddedPlaintext, cek, nonce, ciphertext)) {
-		ESP_LOGE(kTag, "encryptPayload: AES-GCM failed");
-		return {};
-	}
-
-	return ciphertext;
+	return body;
 }

@@ -1,13 +1,13 @@
 #include "webPush.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
 
 extern "C" {
 #include "esp_log.h"
-#include "mbedtls/base64.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/ecdsa.h"
 #include "mbedtls/ecp.h"
@@ -17,76 +17,50 @@ extern "C" {
 
 namespace {
 constexpr const char *kTag = "ESPWebPush";
-
-std::string base64Normalize(const std::string &urlEncoded) {
-	std::string out = urlEncoded;
-	std::replace(out.begin(), out.end(), '-', '+');
-	std::replace(out.begin(), out.end(), '_', '/');
-	while (out.size() % 4 != 0) {
-		out.push_back('=');
-	}
-	return out;
-}
+constexpr time_t kJwtLifetimeSeconds = 12 * 60 * 60;
+constexpr time_t kJwtRefreshMarginSeconds = 5 * 60;
 } // namespace
 
-std::string ESPWebPush::generateVapidJWT(
-    const std::string &aud, const std::string &sub, const std::string &vapidPrivateKeyBase64
-) {
-	std::string header = R"({"alg":"ES256","typ":"JWT"})";
-	unsigned long now = static_cast<unsigned long>(std::time(nullptr));
-	unsigned long exp = now + 12 * 60 * 60;
+std::string ESPWebPush::generateVapidJWT(const std::string &aud, time_t &expOut) {
+	std::vector<uint8_t> privateKey;
+	if (!decodeP256PrivateKey(_vapidConfig.privateKeyBase64, privateKey)) {
+		ESP_LOGE(kTag, "generateVapidJWT: failed to decode private key");
+		return "";
+	}
 
-	char payloadBuf[256];
+	const time_t now = std::time(nullptr);
+	expOut = now + kJwtLifetimeSeconds;
+
+	const std::string header = R"({"alg":"ES256","typ":"JWT"})";
+	char payloadBuf[512];
 	snprintf(
 	    payloadBuf,
 	    sizeof(payloadBuf),
 	    R"({"aud":"%s","exp":%lu,"sub":"%s"})",
 	    aud.c_str(),
-	    exp,
-	    sub.c_str()
+	    static_cast<unsigned long>(expOut),
+	    _vapidConfig.subject.c_str()
 	);
 
-	std::string encodedHeader = base64UrlEncode(header);
-	std::string encodedPayload = base64UrlEncode(payloadBuf);
+	const std::string encodedHeader = base64UrlEncode(header);
+	const std::string encodedPayload = base64UrlEncode(payloadBuf);
 	if (encodedHeader.empty() || encodedPayload.empty()) {
 		return "";
 	}
 
-	std::string message = encodedHeader + "." + encodedPayload;
-
-	std::string normalizedKey = base64Normalize(vapidPrivateKeyBase64);
-	normalizedKey.erase(
-	    std::remove_if(normalizedKey.begin(), normalizedKey.end(), ::isspace),
-	    normalizedKey.end()
-	);
-
-	std::vector<uint8_t> privBytes(32);
-	size_t olen = 0;
-	int res = mbedtls_base64_decode(
-	    privBytes.data(),
-	    privBytes.size(),
-	    &olen,
-	    reinterpret_cast<const unsigned char *>(normalizedKey.data()),
-	    normalizedKey.size()
-	);
-	if (res != 0 || olen != 32) {
-		ESP_LOGE(kTag, "generateVapidJWT: failed to decode private key");
-		return "";
-	}
+	const std::string message = encodedHeader + "." + encodedPayload;
 
 	mbedtls_mpi d;
 	mbedtls_mpi r;
 	mbedtls_mpi s;
-	mbedtls_ecp_group grp;
-	mbedtls_ecp_point Q;
+	mbedtls_ecp_group group;
 	mbedtls_ctr_drbg_context ctrDrbg;
 	mbedtls_entropy_context entropy;
 
 	mbedtls_mpi_init(&d);
 	mbedtls_mpi_init(&r);
 	mbedtls_mpi_init(&s);
-	mbedtls_ecp_group_init(&grp);
-	mbedtls_ecp_point_init(&Q);
+	mbedtls_ecp_group_init(&group);
 	mbedtls_ctr_drbg_init(&ctrDrbg);
 	mbedtls_entropy_init(&entropy);
 
@@ -105,29 +79,13 @@ std::string ESPWebPush::generateVapidJWT(
 			ESP_LOGE(kTag, "generateVapidJWT: failed to seed DRBG");
 			break;
 		}
-
-		if (mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1) != 0) {
-			ESP_LOGE(kTag, "generateVapidJWT: failed to load curve");
+		if (mbedtls_ecp_group_load(&group, MBEDTLS_ECP_DP_SECP256R1) != 0) {
 			break;
 		}
-
-		if (mbedtls_mpi_read_binary(&d, privBytes.data(), 32) != 0) {
-			ESP_LOGE(kTag, "generateVapidJWT: failed to load private key");
+		if (mbedtls_mpi_read_binary(&d, privateKey.data(), privateKey.size()) != 0) {
 			break;
 		}
-
-		if (mbedtls_ecp_check_privkey(&grp, &d) != 0) {
-			ESP_LOGE(kTag, "generateVapidJWT: private key invalid");
-			break;
-		}
-
-		if (mbedtls_ecp_mul(&grp, &Q, &d, &grp.G, mbedtls_ctr_drbg_random, &ctrDrbg) != 0) {
-			ESP_LOGE(kTag, "generateVapidJWT: failed to derive public key");
-			break;
-		}
-
-		if (mbedtls_ecp_check_pubkey(&grp, &Q) != 0) {
-			ESP_LOGE(kTag, "generateVapidJWT: derived public key invalid");
+		if (mbedtls_ecp_check_privkey(&group, &d) != 0) {
 			break;
 		}
 
@@ -136,25 +94,23 @@ std::string ESPWebPush::generateVapidJWT(
 		mbedtls_md_init(&mdctx);
 		const mbedtls_md_info_t *mdinfo = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
 		if (!mdinfo || mbedtls_md_setup(&mdctx, mdinfo, 0) != 0) {
-			ESP_LOGE(kTag, "generateVapidJWT: md setup failed");
 			mbedtls_md_free(&mdctx);
 			break;
 		}
 		if (mbedtls_md_starts(&mdctx) != 0 ||
 		    mbedtls_md_update(
 		        &mdctx,
-		        reinterpret_cast<const uint8_t *>(message.data()),
+		        reinterpret_cast<const unsigned char *>(message.data()),
 		        message.size()
 		    ) != 0 ||
 		    mbedtls_md_finish(&mdctx, hash) != 0) {
-			ESP_LOGE(kTag, "generateVapidJWT: sha256 failed");
 			mbedtls_md_free(&mdctx);
 			break;
 		}
 		mbedtls_md_free(&mdctx);
 
 		if (mbedtls_ecdsa_sign_det_ext(
-		        &grp,
+		        &group,
 		        &r,
 		        &s,
 		        &d,
@@ -164,15 +120,16 @@ std::string ESPWebPush::generateVapidJWT(
 		        mbedtls_ctr_drbg_random,
 		        &ctrDrbg
 		    ) != 0) {
-			ESP_LOGE(kTag, "generateVapidJWT: signing failed");
 			break;
 		}
 
-		uint8_t sig[64] = {};
-		mbedtls_mpi_write_binary(&r, sig, 32);
-		mbedtls_mpi_write_binary(&s, sig + 32, 32);
+		std::array<uint8_t, 64> sig{};
+		if (mbedtls_mpi_write_binary(&r, sig.data(), 32) != 0 ||
+		    mbedtls_mpi_write_binary(&s, sig.data() + 32, 32) != 0) {
+			break;
+		}
 
-		std::string encodedSig = base64UrlEncode(sig, sizeof(sig));
+		const std::string encodedSig = base64UrlEncode(sig.data(), sig.size());
 		if (encodedSig.empty()) {
 			break;
 		}
@@ -181,13 +138,62 @@ std::string ESPWebPush::generateVapidJWT(
 		success = true;
 	} while (false);
 
-	mbedtls_mpi_free(&d);
-	mbedtls_mpi_free(&r);
-	mbedtls_mpi_free(&s);
-	mbedtls_ecp_group_free(&grp);
-	mbedtls_ecp_point_free(&Q);
-	mbedtls_ctr_drbg_free(&ctrDrbg);
 	mbedtls_entropy_free(&entropy);
+	mbedtls_ctr_drbg_free(&ctrDrbg);
+	mbedtls_ecp_group_free(&group);
+	mbedtls_mpi_free(&s);
+	mbedtls_mpi_free(&r);
+	mbedtls_mpi_free(&d);
 
 	return success ? signedToken : "";
+}
+
+std::string ESPWebPush::jwtForAudience(const std::string &aud) {
+	if (aud.empty()) {
+		return "";
+	}
+
+	const time_t now = std::time(nullptr);
+	{
+		std::lock_guard<std::mutex> guard(_jwtCacheMutex);
+		for (JwtCacheEntry &entry : _jwtCache) {
+			if (entry.aud == aud && !entry.token.empty() &&
+			    entry.exp > (now + kJwtRefreshMarginSeconds)) {
+				entry.lastUsedTick = xTaskGetTickCount();
+				return entry.token;
+			}
+		}
+	}
+
+	time_t exp = 0;
+	const std::string jwt = generateVapidJWT(aud, exp);
+	if (jwt.empty()) {
+		return "";
+	}
+
+	std::lock_guard<std::mutex> guard(_jwtCacheMutex);
+	JwtCacheEntry *target = nullptr;
+	for (JwtCacheEntry &entry : _jwtCache) {
+		if (entry.aud == aud) {
+			target = &entry;
+			break;
+		}
+		if (!target && entry.token.empty()) {
+			target = &entry;
+		}
+	}
+	if (!target) {
+		target = &_jwtCache[0];
+		for (JwtCacheEntry &entry : _jwtCache) {
+			if (entry.lastUsedTick < target->lastUsedTick) {
+				target = &entry;
+			}
+		}
+	}
+
+	target->aud = aud;
+	target->token = jwt;
+	target->exp = exp;
+	target->lastUsedTick = xTaskGetTickCount();
+	return target->token;
 }
