@@ -18,6 +18,7 @@ All notable changes to this project will be documented in this file.
 - `deinit()` now shuts down cooperatively and resolves queued-but-unprocessed items with `WebPushError::ShuttingDown`.
 - Structured and raw payload sends now enforce the payload-size guard before transport.
 - README, example sketch, package metadata, and CI now describe the v2 API and drop stale `esp-worker` references.
+- CI push triggers now include `feature/**` branches so v2 work runs workflows before merge.
 - `library.json` now advertises both Arduino and ESP-IDF compatibility.
 
 ### Notes
