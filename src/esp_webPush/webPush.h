@@ -76,6 +76,8 @@ struct PushPayload {
 
 enum class WebPushQueueMemory : uint8_t { Any = 0, Internal, Psram };
 
+enum class WebPushJoinStatus : uint8_t { Completed = 0, Timeout, NotRunning };
+
 enum class WebPushError : uint8_t {
 	None = 0,
 	NotInitialized,
@@ -149,7 +151,9 @@ class ESPWebPush {
 
 	bool init(const WebPushVapidConfig &vapidConfig, const WebPushConfig &config = WebPushConfig{});
 
-	void deinit();
+	void requestStop();
+	WebPushJoinStatus join(uint32_t timeoutMs);
+	WebPushJoinStatus deinit(uint32_t timeoutMs = 10000);
 	bool isInitialized() const {
 		return _initialized.load(std::memory_order_acquire);
 	}
@@ -194,6 +198,7 @@ class ESPWebPush {
 	WebPushResult handleMessage(const PushMessage &msg);
 	WebPushEnqueueResult enqueueResultForError(WebPushError error) const;
 	WebPushResult resultForError(WebPushError error) const;
+	bool cleanupAfterWorkerStop();
 	bool shouldRetry(const WebPushResult &result) const;
 	uint32_t calcRetryDelayMs(uint8_t attempt) const;
 	bool waitForStopAwareDelay(uint32_t delayMs) const;
@@ -297,6 +302,7 @@ class ESPWebPush {
 	std::string endpointOrigin(const std::string &endpoint) const;
 
 	static constexpr uint32_t kDefaultRecordSize = 4010;
+	static constexpr uint32_t kDefaultDeinitTimeoutMs = 10000;
 	static constexpr size_t kJwtCacheSize = 4;
 
 	WebPushVapidConfig _vapidConfig{};

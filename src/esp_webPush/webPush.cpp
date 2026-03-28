@@ -33,7 +33,11 @@ ESPWebPush::~ESPWebPush() {
 }
 
 bool ESPWebPush::init(const WebPushVapidConfig &vapidConfig, const WebPushConfig &config) {
-	deinit();
+	WebPushJoinStatus stopStatus = deinit();
+	if (stopStatus == WebPushJoinStatus::Timeout) {
+		ESP_LOGE(kTag, "init: previous worker did not stop in time");
+		return false;
+	}
 
 	if (vapidConfig.subject.empty() || vapidConfig.publicKeyBase64.empty() ||
 	    vapidConfig.privateKeyBase64.empty()) {
@@ -98,7 +102,7 @@ bool ESPWebPush::init(const WebPushVapidConfig &vapidConfig, const WebPushConfig
 	return true;
 }
 
-void ESPWebPush::deinit() {
+void ESPWebPush::requestStop() {
 	_stopRequested.store(true, std::memory_order_release);
 	_deinitRequested.store(true, std::memory_order_release);
 	_initialized.store(false, std::memory_order_release);
@@ -108,14 +112,55 @@ void ESPWebPush::deinit() {
 		QueueItem *wake = nullptr;
 		(void)xQueueSend(_queue, &wake, 0);
 	}
+}
 
-	if (workerTask != nullptr && xTaskGetCurrentTaskHandle() != workerTask) {
-		while (_workerTask.load(std::memory_order_acquire) != nullptr) {
-			vTaskDelay(pdMS_TO_TICKS(10));
+WebPushJoinStatus ESPWebPush::join(uint32_t timeoutMs) {
+	TaskHandle_t workerTask = _workerTask.load(std::memory_order_acquire);
+	if (workerTask == nullptr) {
+		if (_queue != nullptr) {
+			(void)cleanupAfterWorkerStop();
+			return WebPushJoinStatus::Completed;
 		}
+		return WebPushJoinStatus::NotRunning;
 	}
 
-	failPendingQueueItems(WebPushError::ShuttingDown);
+	if (xTaskGetCurrentTaskHandle() == workerTask) {
+		return WebPushJoinStatus::Timeout;
+	}
+
+	const TickType_t start = xTaskGetTickCount();
+	const TickType_t timeoutTicks = pdMS_TO_TICKS(timeoutMs);
+	while (_workerTask.load(std::memory_order_acquire) != nullptr) {
+		if ((xTaskGetTickCount() - start) >= timeoutTicks) {
+			return WebPushJoinStatus::Timeout;
+		}
+		vTaskDelay(pdMS_TO_TICKS(10));
+	}
+
+	(void)cleanupAfterWorkerStop();
+	return WebPushJoinStatus::Completed;
+}
+
+WebPushJoinStatus ESPWebPush::deinit(uint32_t timeoutMs) {
+	requestStop();
+
+	WebPushJoinStatus status = join(timeoutMs);
+	if (status == WebPushJoinStatus::Timeout) {
+		return status;
+	}
+
+	(void)cleanupAfterWorkerStop();
+	return status;
+}
+
+bool ESPWebPush::cleanupAfterWorkerStop() {
+	if (_workerTask.load(std::memory_order_acquire) != nullptr) {
+		return false;
+	}
+
+	if (_deinitRequested.load(std::memory_order_acquire)) {
+		failPendingQueueItems(WebPushError::ShuttingDown);
+	}
 
 	if (_queue) {
 		vQueueDelete(_queue);
@@ -134,6 +179,7 @@ void ESPWebPush::deinit() {
 	_config = WebPushConfig{};
 	_stopRequested.store(false, std::memory_order_release);
 	_deinitRequested.store(false, std::memory_order_release);
+	return true;
 }
 
 WebPushEnqueueResult ESPWebPush::send(const PushMessage &msg, WebPushResultCB callback) {

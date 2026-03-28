@@ -13,7 +13,7 @@ ArduinoJson v7+ is required for the structured payload API.
 - RFC 8292 VAPID JWT signing with `mailto:` or `https://` subjects.
 - RFC 8291 / RFC 8188 `aes128gcm` Web Push encryption.
 - Async queue + worker task via native FreeRTOS APIs.
-- Cooperative shutdown without force-deleting the worker task.
+- Bounded shutdown via `requestStop()`, `join(timeoutMs)`, and `deinit(timeoutMs)`.
 - Sync `send()` API plus async `send()` overloads that return `WebPushEnqueueResult`.
 - Strict `PushPayload` validation for browser notification fields.
 - Payload-size guard with the RFC-safe default limit of 3993 bytes.
@@ -122,11 +122,14 @@ WebPushResult result = webPush.send(msg);
 
 ```cpp
 if (webPush.isInitialized()) {
-    webPush.deinit();
+    WebPushJoinStatus stopStatus = webPush.deinit();
+    if (stopStatus == WebPushJoinStatus::Timeout) {
+        ESP_LOGW("WEBPUSH", "Worker did not stop within the timeout");
+    }
 }
 ```
 
-`deinit()` is cooperative. It stops accepting new work, lets the in-flight request finish, and resolves queued-but-unprocessed items with `WebPushError::ShuttingDown`.
+`requestStop()` marks shutdown and wakes the worker without blocking. `join(timeoutMs)` waits for the worker to exit and finalizes shutdown when the stop completes in time. `deinit(timeoutMs)` is the convenience wrapper that performs both in one call.
 
 ## Configuration
 
@@ -159,8 +162,10 @@ if (webPush.isInitialized()) {
 - `WebPushResult send(const Subscription&, const JsonDocument&)`
 - `WebPushEnqueueResult send(const Subscription&, JsonVariantConst, WebPushResultCB cb)`
 - `WebPushResult send(const Subscription&, JsonVariantConst)`
+- `void requestStop()`
+- `WebPushJoinStatus join(uint32_t timeoutMs)`
 - `void setNetworkValidator(WebPushNetworkValidator)`
-- `void deinit()` / `bool isInitialized() const`
+- `WebPushJoinStatus deinit(uint32_t timeoutMs = 10000)` / `bool isInitialized() const`
 - `const char *errorToString(WebPushError)`
 
 ## Compatibility

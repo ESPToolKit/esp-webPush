@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cstdio>
 #include <cstring>
 #include <ctime>
 
@@ -32,18 +31,12 @@ std::string ESPWebPush::generateVapidJWT(const std::string &aud, time_t &expOut)
 	expOut = now + kJwtLifetimeSeconds;
 
 	const std::string header = R"({"alg":"ES256","typ":"JWT"})";
-	char payloadBuf[512];
-	snprintf(
-	    payloadBuf,
-	    sizeof(payloadBuf),
-	    R"({"aud":"%s","exp":%lu,"sub":"%s"})",
-	    aud.c_str(),
-	    static_cast<unsigned long>(expOut),
-	    _vapidConfig.subject.c_str()
-	);
+	const std::string payload = std::string(R"({"aud":")") + aud + R"(","exp":)" +
+	                            std::to_string(static_cast<unsigned long>(expOut)) +
+	                            R"(,"sub":")" + _vapidConfig.subject + R"("})";
 
 	const std::string encodedHeader = base64UrlEncode(header);
-	const std::string encodedPayload = base64UrlEncode(payloadBuf);
+	const std::string encodedPayload = base64UrlEncode(payload);
 	if (encodedHeader.empty() || encodedPayload.empty()) {
 		return "";
 	}

@@ -78,7 +78,8 @@ void setup() {
 
 void loop() {
 	if (!tornDown && webPush.isInitialized() && teardownAtMs != 0 && millis() >= teardownAtMs) {
-		webPush.deinit();
+		WebPushJoinStatus stopStatus = webPush.deinit();
+		Serial.printf("[webpush] deinit status: %d\n", static_cast<int>(stopStatus));
 		tornDown = true;
 	}
 	vTaskDelay(pdMS_TO_TICKS(1000));

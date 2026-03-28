@@ -81,11 +81,22 @@ bool waitForFlag(std::atomic<bool> &flag, uint32_t timeoutMs) {
 	return flag.load();
 }
 
+std::string buildLongHttpsSubject() {
+	std::string subject = "https://www.esptoolkit.hu/contact?";
+	for (int i = 0; i < 32; ++i) {
+		subject += "segment" + std::to_string(i) + "=abcdefghijklmnopqrstuvwxyz0123456789&";
+	}
+	return subject;
+}
+
 void test_deinit_is_safe_before_init() {
 	ESPWebPush webPush;
 	TEST_ASSERT_FALSE(webPush.isInitialized());
 
-	webPush.deinit();
+	TEST_ASSERT_EQUAL(
+	    static_cast<int>(WebPushJoinStatus::NotRunning),
+	    static_cast<int>(webPush.deinit())
+	);
 	TEST_ASSERT_FALSE(webPush.isInitialized());
 }
 
@@ -94,10 +105,16 @@ void test_deinit_is_idempotent() {
 	TEST_ASSERT_TRUE(webPush.init(testVapidConfig(), testConfig()));
 	TEST_ASSERT_TRUE(webPush.isInitialized());
 
-	webPush.deinit();
+	TEST_ASSERT_EQUAL(
+	    static_cast<int>(WebPushJoinStatus::Completed),
+	    static_cast<int>(webPush.deinit())
+	);
 	TEST_ASSERT_FALSE(webPush.isInitialized());
 
-	webPush.deinit();
+	TEST_ASSERT_EQUAL(
+	    static_cast<int>(WebPushJoinStatus::NotRunning),
+	    static_cast<int>(webPush.deinit())
+	);
 	TEST_ASSERT_FALSE(webPush.isInitialized());
 }
 
@@ -105,14 +122,20 @@ void test_reinit_after_deinit() {
 	ESPWebPush webPush;
 	TEST_ASSERT_TRUE(webPush.init(testVapidConfig(), testConfig()));
 	TEST_ASSERT_TRUE(webPush.isInitialized());
-	webPush.deinit();
+	TEST_ASSERT_EQUAL(
+	    static_cast<int>(WebPushJoinStatus::Completed),
+	    static_cast<int>(webPush.deinit())
+	);
 	TEST_ASSERT_FALSE(webPush.isInitialized());
 
 	WebPushVapidConfig alt = testVapidConfig();
 	alt.subject = kAltSubject;
 	TEST_ASSERT_TRUE(webPush.init(alt, testConfig()));
 	TEST_ASSERT_TRUE(webPush.isInitialized());
-	webPush.deinit();
+	TEST_ASSERT_EQUAL(
+	    static_cast<int>(WebPushJoinStatus::Completed),
+	    static_cast<int>(webPush.deinit())
+	);
 }
 
 void test_destructor_deinits_active_instance() {
@@ -125,7 +148,39 @@ void test_destructor_deinits_active_instance() {
 	ESPWebPush second;
 	TEST_ASSERT_TRUE(second.init(testVapidConfig(), testConfig()));
 	TEST_ASSERT_TRUE(second.isInitialized());
-	second.deinit();
+	TEST_ASSERT_EQUAL(
+	    static_cast<int>(WebPushJoinStatus::Completed),
+	    static_cast<int>(second.deinit())
+	);
+}
+
+void test_request_stop_is_safe_before_init() {
+	ESPWebPush webPush;
+	webPush.requestStop();
+	TEST_ASSERT_FALSE(webPush.isInitialized());
+}
+
+void test_join_returns_not_running_before_init() {
+	ESPWebPush webPush;
+	TEST_ASSERT_EQUAL(
+	    static_cast<int>(WebPushJoinStatus::NotRunning),
+	    static_cast<int>(webPush.join(100))
+	);
+}
+
+void test_request_stop_and_join_complete_for_idle_worker() {
+	ESPWebPush webPush;
+	TEST_ASSERT_TRUE(webPush.init(testVapidConfig(), testConfig()));
+
+	webPush.requestStop();
+	TEST_ASSERT_EQUAL(
+	    static_cast<int>(WebPushJoinStatus::Completed),
+	    static_cast<int>(webPush.join(1000))
+	);
+	TEST_ASSERT_EQUAL(
+	    static_cast<int>(WebPushJoinStatus::NotRunning),
+	    static_cast<int>(webPush.deinit())
+	);
 }
 
 void test_invalid_subject_rejected() {
@@ -155,7 +210,7 @@ void test_push_payload_rejects_missing_required_fields() {
 	    static_cast<int>(result.error)
 	);
 
-	webPush.deinit();
+	(void)webPush.deinit();
 }
 
 void test_json_document_rejects_unknown_top_level_keys() {
@@ -173,7 +228,7 @@ void test_json_document_rejects_unknown_top_level_keys() {
 	    static_cast<int>(result.error)
 	);
 
-	webPush.deinit();
+	(void)webPush.deinit();
 }
 
 void test_json_variant_rejects_wrong_types() {
@@ -190,7 +245,7 @@ void test_json_variant_rejects_wrong_types() {
 	    static_cast<int>(result.error)
 	);
 
-	webPush.deinit();
+	(void)webPush.deinit();
 }
 
 void test_async_invalid_payload_returns_enqueue_error_without_callback() {
@@ -212,7 +267,7 @@ void test_async_invalid_payload_returns_enqueue_error_without_callback() {
 	);
 	TEST_ASSERT_FALSE(callbackCalled);
 
-	webPush.deinit();
+	(void)webPush.deinit();
 }
 
 void test_payload_limit_is_enforced_for_raw_messages() {
@@ -238,7 +293,7 @@ void test_payload_limit_is_enforced_for_raw_messages() {
 	    static_cast<int>(largeResult.error)
 	);
 
-	webPush.deinit();
+	(void)webPush.deinit();
 }
 
 void test_payload_limit_can_be_disabled() {
@@ -259,7 +314,7 @@ void test_payload_limit_can_be_disabled() {
 	    static_cast<int>(result.error)
 	);
 
-	webPush.deinit();
+	(void)webPush.deinit();
 }
 
 void test_network_validator_false_short_circuits_send() {
@@ -275,7 +330,7 @@ void test_network_validator_false_short_circuits_send() {
 	    static_cast<int>(result.error)
 	);
 
-	webPush.deinit();
+	(void)webPush.deinit();
 }
 
 void test_missing_network_validator_does_not_force_network_unavailable() {
@@ -370,7 +425,10 @@ void test_deinit_fails_pending_queue_items_with_shutting_down() {
 	TEST_ASSERT_TRUE(second.queued());
 
 	vTaskDelay(pdMS_TO_TICKS(20));
-	webPush.deinit();
+	TEST_ASSERT_EQUAL(
+	    static_cast<int>(WebPushJoinStatus::Completed),
+	    static_cast<int>(webPush.deinit())
+	);
 
 	TEST_ASSERT_TRUE(waitForFlag(firstCalled, 1000));
 	TEST_ASSERT_TRUE(waitForFlag(secondCalled, 1000));
@@ -381,6 +439,42 @@ void test_deinit_fails_pending_queue_items_with_shutting_down() {
 	TEST_ASSERT_EQUAL(
 	    static_cast<int>(WebPushError::ShuttingDown),
 	    static_cast<int>(secondError)
+	);
+}
+
+void test_join_timeout_can_be_followed_by_later_success() {
+	ESPWebPush webPush;
+	WebPushConfig cfg = testConfig();
+	cfg.networkValidator = []() { return false; };
+	cfg.maxRetries = 0;
+	TEST_ASSERT_TRUE(webPush.init(testVapidConfig(), cfg));
+
+	std::atomic<bool> callbackEntered{false};
+	std::atomic<bool> callbackDone{false};
+
+	WebPushEnqueueResult enqueue =
+	    webPush.send(testSubscription(), testPayload(), [&](WebPushResult) {
+		    callbackEntered.store(true);
+		    vTaskDelay(pdMS_TO_TICKS(200));
+		    callbackDone.store(true);
+	    });
+
+	TEST_ASSERT_TRUE(enqueue.queued());
+	TEST_ASSERT_TRUE(waitForFlag(callbackEntered, 500));
+
+	webPush.requestStop();
+	TEST_ASSERT_EQUAL(
+	    static_cast<int>(WebPushJoinStatus::Timeout),
+	    static_cast<int>(webPush.join(10))
+	);
+	TEST_ASSERT_TRUE(waitForFlag(callbackDone, 1000));
+	TEST_ASSERT_EQUAL(
+	    static_cast<int>(WebPushJoinStatus::Completed),
+	    static_cast<int>(webPush.join(1000))
+	);
+	TEST_ASSERT_EQUAL(
+	    static_cast<int>(WebPushJoinStatus::NotRunning),
+	    static_cast<int>(webPush.deinit())
 	);
 }
 
@@ -466,6 +560,30 @@ void test_rfc8291_body_matches_example() {
 	TEST_ASSERT_EQUAL_STRING(kExpectedBody, webPush.base64UrlEncode(body.data(), body.size()).c_str());
 }
 
+void test_generate_vapid_jwt_keeps_long_https_subject() {
+	ESPWebPush webPush;
+	webPush._vapidConfig = testVapidConfig();
+	webPush._vapidConfig.subject = buildLongHttpsSubject();
+
+	time_t exp = 0;
+	std::string jwt = webPush.generateVapidJWT("https://push.example.com", exp);
+	TEST_ASSERT_FALSE(jwt.empty());
+
+	size_t firstDot = jwt.find('.');
+	size_t secondDot = jwt.find('.', firstDot + 1);
+	TEST_ASSERT_NOT_EQUAL(std::string::npos, firstDot);
+	TEST_ASSERT_NOT_EQUAL(std::string::npos, secondDot);
+
+	std::vector<uint8_t> payloadBytes;
+	TEST_ASSERT_TRUE(webPush.base64UrlDecode(
+	    jwt.substr(firstDot + 1, secondDot - firstDot - 1),
+	    payloadBytes
+	));
+
+	std::string payload(payloadBytes.begin(), payloadBytes.end());
+	TEST_ASSERT_NOT_EQUAL(std::string::npos, payload.find(webPush._vapidConfig.subject));
+}
+
 } // namespace
 
 void setUp() {
@@ -480,6 +598,9 @@ void setup() {
 	RUN_TEST(test_deinit_is_idempotent);
 	RUN_TEST(test_reinit_after_deinit);
 	RUN_TEST(test_destructor_deinits_active_instance);
+	RUN_TEST(test_request_stop_is_safe_before_init);
+	RUN_TEST(test_join_returns_not_running_before_init);
+	RUN_TEST(test_request_stop_and_join_complete_for_idle_worker);
 	RUN_TEST(test_invalid_subject_rejected);
 	RUN_TEST(test_mismatched_vapid_keys_rejected);
 	RUN_TEST(test_push_payload_rejects_missing_required_fields);
@@ -493,8 +614,10 @@ void setup() {
 	RUN_TEST(test_network_validator_can_be_replaced_after_init);
 	RUN_TEST(test_async_queued_message_invokes_callback_once);
 	RUN_TEST(test_deinit_fails_pending_queue_items_with_shutting_down);
+	RUN_TEST(test_join_timeout_can_be_followed_by_later_success);
 	RUN_TEST(test_rfc8291_key_derivation_matches_appendix_a);
 	RUN_TEST(test_rfc8291_body_matches_example);
+	RUN_TEST(test_generate_vapid_jwt_keeps_long_https_subject);
 	UNITY_END();
 }
 
