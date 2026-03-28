@@ -28,10 +28,10 @@ void setup() {
 
 	webPush.init(vapid, cfg);
 
-	Subscription sub;
-	sub.endpoint = "https://fcm.googleapis.com/fcm/send/...";
-	sub.p256dh = "BMEp256dhBase64Url...";
-	sub.auth = "authSecretBase64Url...";
+	WebPushSubscription subscription;
+	subscription.endpoint = "https://fcm.googleapis.com/fcm/send/...";
+	subscription.p256dh = "BMEp256dhBase64Url...";
+	subscription.auth = "authSecretBase64Url...";
 
 	PushPayload payload;
 	payload.title = "Hello";
@@ -39,7 +39,7 @@ void setup() {
 	payload.tag = "basic-demo";
 	payload.icon = "https://www.esptoolkit.hu/icon.png";
 
-	WebPushEnqueueResult enqueue = webPush.send(sub, payload, [](WebPushResult result) {
+	WebPushEnqueueResult enqueue = webPush.send(subscription, payload, [](WebPushResult result) {
 		if (!result.ok()) {
 			Serial.printf(
 			    "[webpush] async failed: %s (status %d)\n",
@@ -63,7 +63,7 @@ void setup() {
 	jsonPayload["body"] = "ESP32";
 	jsonPayload["tag"] = "basic-demo";
 
-	WebPushResult syncResult = webPush.send(sub, jsonPayload);
+	WebPushResult syncResult = webPush.send(subscription, jsonPayload);
 	if (!syncResult.ok()) {
 		Serial.printf(
 		    "[webpush] sync failed: %s\n",

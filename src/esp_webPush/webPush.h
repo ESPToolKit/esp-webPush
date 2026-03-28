@@ -37,17 +37,14 @@ struct WebPushVapidConfig {
 	std::string privateKeyBase64;
 };
 
-struct Subscription {
+struct WebPushSubscription {
 	std::string endpoint;
 	std::string p256dh;
 	std::string auth;
-	std::string deviceId;
-	std::vector<std::string> disabledTags;
-	bool deleted = false;
 };
 
 struct PushMessage {
-	Subscription sub;
+	WebPushSubscription subscription;
 	std::string payload;
 };
 
@@ -161,17 +158,23 @@ class ESPWebPush {
 	WebPushEnqueueResult send(const PushMessage &msg, WebPushResultCB callback);
 	WebPushResult send(const PushMessage &msg);
 	WebPushEnqueueResult send(
-	    const Subscription &sub, const PushPayload &payload, WebPushResultCB callback
+	    const WebPushSubscription &subscription,
+	    const PushPayload &payload,
+	    WebPushResultCB callback
 	);
-	WebPushResult send(const Subscription &sub, const PushPayload &payload);
+	WebPushResult send(const WebPushSubscription &subscription, const PushPayload &payload);
 	WebPushEnqueueResult send(
-	    const Subscription &sub, const JsonDocument &payload, WebPushResultCB callback
+	    const WebPushSubscription &subscription,
+	    const JsonDocument &payload,
+	    WebPushResultCB callback
 	);
-	WebPushResult send(const Subscription &sub, const JsonDocument &payload);
+	WebPushResult send(const WebPushSubscription &subscription, const JsonDocument &payload);
 	WebPushEnqueueResult send(
-	    const Subscription &sub, JsonVariantConst payload, WebPushResultCB callback
+	    const WebPushSubscription &subscription,
+	    JsonVariantConst payload,
+	    WebPushResultCB callback
 	);
-	WebPushResult send(const Subscription &sub, JsonVariantConst payload);
+	WebPushResult send(const WebPushSubscription &subscription, JsonVariantConst payload);
 
 	void setNetworkValidator(WebPushNetworkValidator validator);
 
@@ -203,19 +206,19 @@ class ESPWebPush {
 	uint32_t calcRetryDelayMs(uint8_t attempt) const;
 	bool waitForStopAwareDelay(uint32_t delayMs) const;
 
-	bool validateSubscription(const Subscription &sub, WebPushResult &result) const;
+	bool validateSubscription(const WebPushSubscription &subscription, WebPushResult &result) const;
 	bool validatePayloadSize(const std::string &payload, WebPushResult &result) const;
 	bool validateMessage(const PushMessage &msg, WebPushResult &result) const;
 	bool validateVapidSubject(WebPushResult &result) const;
 	bool validateVapidKeys(WebPushResult &result);
 	bool buildMessage(
-	    const Subscription &sub,
+	    const WebPushSubscription &subscription,
 	    const PushPayload &payload,
 	    PushMessage &message,
 	    WebPushResult &result
 	) const;
 	bool buildMessage(
-	    const Subscription &sub,
+	    const WebPushSubscription &subscription,
 	    JsonVariantConst payload,
 	    PushMessage &message,
 	    WebPushResult &result
@@ -276,7 +279,7 @@ class ESPWebPush {
 
 	std::vector<uint8_t> encryptPayload(
 	    const std::string &plaintext,
-	    const Subscription &sub
+	    const WebPushSubscription &subscription
 	);
 
 	bool generateSalt(uint8_t *saltBin);

@@ -416,20 +416,22 @@ bool ESPWebPush::buildRecordBody(
 	return true;
 }
 
-std::vector<uint8_t> ESPWebPush::encryptPayload(const std::string &plaintext, const Subscription &sub) {
+std::vector<uint8_t> ESPWebPush::encryptPayload(
+    const std::string &plaintext, const WebPushSubscription &subscription
+) {
 	std::lock_guard<std::mutex> guard(_cryptoMutex);
 	if (!initCrypto()) {
 		return {};
 	}
 
 	std::vector<uint8_t> userPubKey;
-	if (!decodeP256PublicKey(sub.p256dh, userPubKey)) {
+	if (!decodeP256PublicKey(subscription.p256dh, userPubKey)) {
 		ESP_LOGE(kTag, "encryptPayload: client public key invalid");
 		return {};
 	}
 
 	std::vector<uint8_t> authSecret;
-	if (!base64UrlDecode(sub.auth, authSecret) || authSecret.size() != 16) {
+	if (!base64UrlDecode(subscription.auth, authSecret) || authSecret.size() != 16) {
 		ESP_LOGE(kTag, "encryptPayload: auth secret invalid");
 		return {};
 	}

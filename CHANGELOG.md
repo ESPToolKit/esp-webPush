@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- Breaking: renamed the public transport struct from `Subscription` to `WebPushSubscription` everywhere with no compatibility alias.
+- Breaking: renamed `PushMessage.sub` to `PushMessage.subscription` for API consistency.
+- Breaking: removed app-level metadata fields `deviceId`, `disabledTags`, and `deleted` from the transport struct.
+- `validateSubscription()` now validates only the required Web Push transport fields: `endpoint`, `p256dh`, and `auth`.
+
 ## [2.0.0] - 2026-03-28
 
 ### Added

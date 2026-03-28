@@ -53,13 +53,13 @@ void loop() {}
 
 ## Usage
 
-### Subscription / Structured Payload
+### WebPushSubscription / Structured Payload
 
 ```cpp
-Subscription sub;
-sub.endpoint = "https://fcm.googleapis.com/fcm/send/...";
-sub.p256dh = "BME...";
-sub.auth = "nsa...";
+WebPushSubscription subscription;
+subscription.endpoint = "https://fcm.googleapis.com/fcm/send/...";
+subscription.p256dh = "BME...";
+subscription.auth = "nsa...";
 
 PushPayload payload;
 payload.title = "Hello";
@@ -71,7 +71,7 @@ payload.icon = "https://example.com/icon.png";
 ### Async Send
 
 ```cpp
-WebPushEnqueueResult enqueue = webPush.send(sub, payload, [](WebPushResult result) {
+WebPushEnqueueResult enqueue = webPush.send(subscription, payload, [](WebPushResult result) {
     if (!result.ok()) {
         ESP_LOGE("WEBPUSH", "Push failed: %s (status %d)",
                  result.message, result.statusCode);
@@ -95,13 +95,13 @@ doc["title"] = "Hello";
 doc["body"] = "ESP32";
 doc["tag"] = "demo";
 
-WebPushResult result = webPush.send(sub, doc);
+WebPushResult result = webPush.send(subscription, doc);
 ```
 
 ### Sync Send
 
 ```cpp
-WebPushResult result = webPush.send(sub, payload);
+WebPushResult result = webPush.send(subscription, payload);
 if (!result.ok()) {
     ESP_LOGW("WEBPUSH", "Sync push failed: %s", result.message);
 }
@@ -111,7 +111,7 @@ if (!result.ok()) {
 
 ```cpp
 PushMessage msg;
-msg.sub = sub;
+msg.subscription = subscription;
 msg.payload = "{\"title\":\"Hello\",\"body\":\"ESP32\"}";
 
 // Raw payload strings remain supported, but they are not schema-validated.
@@ -156,12 +156,12 @@ if (webPush.isInitialized()) {
 - `bool init(const WebPushVapidConfig&, const WebPushConfig& = {})`
 - `WebPushEnqueueResult send(const PushMessage&, WebPushResultCB cb)`
 - `WebPushResult send(const PushMessage&)`
-- `WebPushEnqueueResult send(const Subscription&, const PushPayload&, WebPushResultCB cb)`
-- `WebPushResult send(const Subscription&, const PushPayload&)`
-- `WebPushEnqueueResult send(const Subscription&, const JsonDocument&, WebPushResultCB cb)`
-- `WebPushResult send(const Subscription&, const JsonDocument&)`
-- `WebPushEnqueueResult send(const Subscription&, JsonVariantConst, WebPushResultCB cb)`
-- `WebPushResult send(const Subscription&, JsonVariantConst)`
+- `WebPushEnqueueResult send(const WebPushSubscription&, const PushPayload&, WebPushResultCB cb)`
+- `WebPushResult send(const WebPushSubscription&, const PushPayload&)`
+- `WebPushEnqueueResult send(const WebPushSubscription&, const JsonDocument&, WebPushResultCB cb)`
+- `WebPushResult send(const WebPushSubscription&, const JsonDocument&)`
+- `WebPushEnqueueResult send(const WebPushSubscription&, JsonVariantConst, WebPushResultCB cb)`
+- `WebPushResult send(const WebPushSubscription&, JsonVariantConst)`
 - `void requestStop()`
 - `WebPushJoinStatus join(uint32_t timeoutMs)`
 - `void setNetworkValidator(WebPushNetworkValidator)`

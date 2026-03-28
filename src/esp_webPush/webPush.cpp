@@ -237,17 +237,19 @@ WebPushResult ESPWebPush::send(const PushMessage &msg) {
 }
 
 WebPushEnqueueResult ESPWebPush::send(
-    const Subscription &sub, const PushPayload &payload, WebPushResultCB callback
+    const WebPushSubscription &subscription, const PushPayload &payload, WebPushResultCB callback
 ) {
 	PushMessage message;
 	WebPushResult result{};
-	if (!buildMessage(sub, payload, message, result)) {
+	if (!buildMessage(subscription, payload, message, result)) {
 		return enqueueResultForError(result.error);
 	}
 	return send(message, std::move(callback));
 }
 
-WebPushResult ESPWebPush::send(const Subscription &sub, const PushPayload &payload) {
+WebPushResult ESPWebPush::send(
+    const WebPushSubscription &subscription, const PushPayload &payload
+) {
 	if (_stopRequested.load(std::memory_order_acquire)) {
 		return resultForError(WebPushError::ShuttingDown);
 	}
@@ -257,34 +259,38 @@ WebPushResult ESPWebPush::send(const Subscription &sub, const PushPayload &paylo
 
 	PushMessage message;
 	WebPushResult result{};
-	if (!buildMessage(sub, payload, message, result)) {
+	if (!buildMessage(subscription, payload, message, result)) {
 		return result;
 	}
 	return send(message);
 }
 
 WebPushEnqueueResult ESPWebPush::send(
-    const Subscription &sub, const JsonDocument &payload, WebPushResultCB callback
+    const WebPushSubscription &subscription, const JsonDocument &payload, WebPushResultCB callback
 ) {
-	return send(sub, payload.as<JsonVariantConst>(), std::move(callback));
+	return send(subscription, payload.as<JsonVariantConst>(), std::move(callback));
 }
 
-WebPushResult ESPWebPush::send(const Subscription &sub, const JsonDocument &payload) {
-	return send(sub, payload.as<JsonVariantConst>());
+WebPushResult ESPWebPush::send(
+    const WebPushSubscription &subscription, const JsonDocument &payload
+) {
+	return send(subscription, payload.as<JsonVariantConst>());
 }
 
 WebPushEnqueueResult ESPWebPush::send(
-    const Subscription &sub, JsonVariantConst payload, WebPushResultCB callback
+    const WebPushSubscription &subscription, JsonVariantConst payload, WebPushResultCB callback
 ) {
 	PushMessage message;
 	WebPushResult result{};
-	if (!buildMessage(sub, payload, message, result)) {
+	if (!buildMessage(subscription, payload, message, result)) {
 		return enqueueResultForError(result.error);
 	}
 	return send(message, std::move(callback));
 }
 
-WebPushResult ESPWebPush::send(const Subscription &sub, JsonVariantConst payload) {
+WebPushResult ESPWebPush::send(
+    const WebPushSubscription &subscription, JsonVariantConst payload
+) {
 	if (_stopRequested.load(std::memory_order_acquire)) {
 		return resultForError(WebPushError::ShuttingDown);
 	}
@@ -294,7 +300,7 @@ WebPushResult ESPWebPush::send(const Subscription &sub, JsonVariantConst payload
 
 	PushMessage message;
 	WebPushResult result{};
-	if (!buildMessage(sub, payload, message, result)) {
+	if (!buildMessage(subscription, payload, message, result)) {
 		return result;
 	}
 	return send(message);
@@ -369,7 +375,10 @@ WebPushResult ESPWebPush::invalidPayloadResult() const {
 }
 
 bool ESPWebPush::buildMessage(
-    const Subscription &sub, const PushPayload &payload, PushMessage &message, WebPushResult &result
+    const WebPushSubscription &subscription,
+    const PushPayload &payload,
+    PushMessage &message,
+    WebPushResult &result
 ) const {
 	std::string serializedPayload;
 	const char *payloadError = serializePushPayload(payload, serializedPayload);
@@ -379,13 +388,16 @@ bool ESPWebPush::buildMessage(
 		return false;
 	}
 
-	message.sub = sub;
+	message.subscription = subscription;
 	message.payload = std::move(serializedPayload);
 	return true;
 }
 
 bool ESPWebPush::buildMessage(
-    const Subscription &sub, JsonVariantConst payload, PushMessage &message, WebPushResult &result
+    const WebPushSubscription &subscription,
+    JsonVariantConst payload,
+    PushMessage &message,
+    WebPushResult &result
 ) const {
 	std::string serializedPayload;
 	const char *payloadError = validateAndSerializePushPayload(payload, serializedPayload);
@@ -395,7 +407,7 @@ bool ESPWebPush::buildMessage(
 		return false;
 	}
 
-	message.sub = sub;
+	message.subscription = subscription;
 	message.payload = std::move(serializedPayload);
 	return true;
 }
@@ -423,14 +435,14 @@ WebPushResult ESPWebPush::handleMessage(const PushMessage &msg) {
 			continue;
 		}
 
-		std::vector<uint8_t> body = encryptPayload(msg.payload, msg.sub);
+		std::vector<uint8_t> body = encryptPayload(msg.payload, msg.subscription);
 		if (body.empty()) {
 			result.error = WebPushError::EncryptFailed;
 			result.message = errorToString(result.error);
 			return result;
 		}
 
-		const std::string aud = endpointOrigin(msg.sub.endpoint);
+		const std::string aud = endpointOrigin(msg.subscription.endpoint);
 		const std::string jwt = jwtForAudience(aud);
 		if (jwt.empty()) {
 			result.error = WebPushError::JwtFailed;
@@ -438,7 +450,7 @@ WebPushResult ESPWebPush::handleMessage(const PushMessage &msg) {
 			return result;
 		}
 
-		WebPushResult request = sendPushRequest(msg.sub.endpoint, jwt, body);
+		WebPushResult request = sendPushRequest(msg.subscription.endpoint, jwt, body);
 		if (request.ok()) {
 			return request;
 		}
@@ -520,8 +532,10 @@ uint32_t ESPWebPush::calcRetryDelayMs(uint8_t attempt) const {
 	return delay;
 }
 
-bool ESPWebPush::validateSubscription(const Subscription &sub, WebPushResult &result) const {
-	if (sub.deleted || sub.endpoint.empty() || sub.p256dh.empty() || sub.auth.empty()) {
+bool ESPWebPush::validateSubscription(
+    const WebPushSubscription &subscription, WebPushResult &result
+) const {
+	if (subscription.endpoint.empty() || subscription.p256dh.empty() || subscription.auth.empty()) {
 		result.error = WebPushError::InvalidSubscription;
 		result.message = errorToString(result.error);
 		return false;
@@ -539,7 +553,7 @@ bool ESPWebPush::validatePayloadSize(const std::string &payload, WebPushResult &
 }
 
 bool ESPWebPush::validateMessage(const PushMessage &msg, WebPushResult &result) const {
-	if (!validateSubscription(msg.sub, result)) {
+	if (!validateSubscription(msg.subscription, result)) {
 		return false;
 	}
 	return validatePayloadSize(msg.payload, result);

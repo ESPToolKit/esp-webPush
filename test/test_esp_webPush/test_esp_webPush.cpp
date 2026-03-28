@@ -58,12 +58,12 @@ WebPushConfig testConfig() {
 	return cfg;
 }
 
-Subscription testSubscription() {
-	Subscription sub{};
-	sub.endpoint = "https://example.com/push";
-	sub.p256dh = kReceiverPublicKey;
-	sub.auth = kAuthSecret;
-	return sub;
+WebPushSubscription testSubscription() {
+	WebPushSubscription subscription{};
+	subscription.endpoint = "https://example.com/push";
+	subscription.p256dh = kReceiverPublicKey;
+	subscription.auth = kAuthSecret;
+	return subscription;
 }
 
 PushPayload testPayload() {
@@ -248,6 +248,30 @@ void test_json_variant_rejects_wrong_types() {
 	(void)webPush.deinit();
 }
 
+void test_subscription_requires_only_transport_fields() {
+	ESPWebPush webPush;
+	WebPushConfig cfg = testConfig();
+	cfg.networkValidator = []() { return false; };
+	cfg.maxRetries = 0;
+	TEST_ASSERT_TRUE(webPush.init(testVapidConfig(), cfg));
+
+	WebPushSubscription subscription = testSubscription();
+	WebPushResult validResult = webPush.send(subscription, testPayload());
+	TEST_ASSERT_EQUAL(
+	    static_cast<int>(WebPushError::NetworkUnavailable),
+	    static_cast<int>(validResult.error)
+	);
+
+	subscription.endpoint.clear();
+	WebPushResult invalidResult = webPush.send(subscription, testPayload());
+	TEST_ASSERT_EQUAL(
+	    static_cast<int>(WebPushError::InvalidSubscription),
+	    static_cast<int>(invalidResult.error)
+	);
+
+	(void)webPush.deinit();
+}
+
 void test_async_invalid_payload_returns_enqueue_error_without_callback() {
 	ESPWebPush webPush;
 	TEST_ASSERT_TRUE(webPush.init(testVapidConfig(), testConfig()));
@@ -275,7 +299,7 @@ void test_payload_limit_is_enforced_for_raw_messages() {
 	TEST_ASSERT_TRUE(webPush.init(testVapidConfig(), testConfig()));
 
 	PushMessage fits{};
-	fits.sub = testSubscription();
+	fits.subscription = testSubscription();
 	fits.payload.assign(3993, 'a');
 
 	PushMessage tooLarge = fits;
@@ -305,7 +329,7 @@ void test_payload_limit_can_be_disabled() {
 	TEST_ASSERT_TRUE(webPush.init(testVapidConfig(), cfg));
 
 	PushMessage msg{};
-	msg.sub = testSubscription();
+	msg.subscription = testSubscription();
 	msg.payload.assign(5000, 'x');
 
 	WebPushResult result = webPush.send(msg);
@@ -606,6 +630,7 @@ void setup() {
 	RUN_TEST(test_push_payload_rejects_missing_required_fields);
 	RUN_TEST(test_json_document_rejects_unknown_top_level_keys);
 	RUN_TEST(test_json_variant_rejects_wrong_types);
+	RUN_TEST(test_subscription_requires_only_transport_fields);
 	RUN_TEST(test_async_invalid_payload_returns_enqueue_error_without_callback);
 	RUN_TEST(test_payload_limit_is_enforced_for_raw_messages);
 	RUN_TEST(test_payload_limit_can_be_disabled);
