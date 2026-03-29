@@ -572,15 +572,40 @@ bool ESPWebPush::validateVapidSubject(WebPushResult &result) const {
 bool ESPWebPush::validateVapidKeys(WebPushResult &result) {
 	std::vector<uint8_t> pubKey;
 	std::vector<uint8_t> privKey;
-	if (!decodeP256PublicKey(_vapidConfig.publicKeyBase64, pubKey) ||
-	    !decodeP256PrivateKey(_vapidConfig.privateKeyBase64, privKey)) {
+	if (!decodeP256PublicKey(_vapidConfig.publicKeyBase64, pubKey)) {
+		ESP_LOGE(
+		    kTag,
+		    "validateVapidKeys: public key decode failed (expected uncompressed P-256 base64url)"
+		);
+		result.error = WebPushError::InvalidVapidKeys;
+		result.message = errorToString(result.error);
+		return false;
+	}
+
+	if (!decodeP256PrivateKey(_vapidConfig.privateKeyBase64, privKey)) {
+		ESP_LOGE(kTag, "validateVapidKeys: private key decode failed (expected 32-byte base64url)");
+		result.error = WebPushError::InvalidVapidKeys;
+		result.message = errorToString(result.error);
+		return false;
+	}
+
+	if (!initCrypto()) {
+		ESP_LOGE(kTag, "validateVapidKeys: crypto init failed before key-pair verification");
 		result.error = WebPushError::InvalidVapidKeys;
 		result.message = errorToString(result.error);
 		return false;
 	}
 
 	std::vector<uint8_t> derivedPublicKey;
-	if (!deriveP256PublicKey(privKey, derivedPublicKey) || derivedPublicKey != pubKey) {
+	if (!deriveP256PublicKey(privKey, derivedPublicKey)) {
+		ESP_LOGE(kTag, "validateVapidKeys: failed to derive public key from private key");
+		result.error = WebPushError::InvalidVapidKeys;
+		result.message = errorToString(result.error);
+		return false;
+	}
+
+	if (derivedPublicKey != pubKey) {
+		ESP_LOGE(kTag, "validateVapidKeys: configured public key does not match private key");
 		result.error = WebPushError::InvalidVapidKeys;
 		result.message = errorToString(result.error);
 		return false;

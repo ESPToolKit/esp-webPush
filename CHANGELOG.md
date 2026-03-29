@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Fixed ESP32 VAPID key-pair validation and runtime public-key derivation to use the library DRBG-backed mbedTLS path instead of relying on null RNG callbacks.
+
 ### Changed
 - Breaking: renamed the public transport struct from `Subscription` to `WebPushSubscription` everywhere with no compatibility alias.
 - Breaking: renamed `PushMessage.sub` to `PushMessage.subscription` for API consistency.

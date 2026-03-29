@@ -247,7 +247,7 @@ class ESPWebPush {
 	bool decodeP256PrivateKey(const std::string &keyBase64, std::vector<uint8_t> &output) const;
 	bool deriveP256PublicKey(
 	    const std::vector<uint8_t> &privateKey, std::vector<uint8_t> &publicKeyOut
-	) const;
+	);
 	bool deriveSharedSecret(
 	    const std::vector<uint8_t> &peerPublicKey,
 	    const std::vector<uint8_t> &privateKey,

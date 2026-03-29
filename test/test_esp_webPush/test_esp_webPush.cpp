@@ -26,6 +26,9 @@ constexpr const char *kAltSubject = "https://www.esptoolkit.hu/contact";
 constexpr const char *kSenderPublicKey =
     "BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8";
 constexpr const char *kSenderPrivateKey = "yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw";
+constexpr const char *kNodeGeneratedPublicKey =
+    "BJNtgqAEOcvDXspstun224SyHEkoOIKDCX_Ldnv__d_r_EFuqQz6J1QzNJXttGRni4DEcoTmYeRrOIfaSbxCGBg";
+constexpr const char *kNodeGeneratedPrivateKey = "4ch67pU4NebzixjpzfQyEbCRk9qLGol-Hzh6xTZZfyI";
 constexpr const char *kReceiverPublicKey =
     "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4";
 constexpr const char *kReceiverPrivateKey = "q1dXpw3UpT5VOmu_cf_v6ih07Aems3njxI-JWgLcM94";
@@ -190,11 +193,57 @@ void test_invalid_subject_rejected() {
 	TEST_ASSERT_FALSE(webPush.init(bad, testConfig()));
 }
 
+void test_init_accepts_node_generated_unpadded_base64url_vapid_keys() {
+	ESPWebPush webPush;
+	WebPushVapidConfig vapid{};
+	vapid.subject = kSubject;
+	vapid.publicKeyBase64 = kNodeGeneratedPublicKey;
+	vapid.privateKeyBase64 = kNodeGeneratedPrivateKey;
+
+	TEST_ASSERT_TRUE(webPush.init(vapid, testConfig()));
+	TEST_ASSERT_EQUAL(
+	    static_cast<int>(WebPushJoinStatus::Completed),
+	    static_cast<int>(webPush.deinit())
+	);
+}
+
 void test_mismatched_vapid_keys_rejected() {
 	ESPWebPush webPush;
 	WebPushVapidConfig bad = testVapidConfig();
 	bad.publicKeyBase64 = kReceiverPublicKey;
 	TEST_ASSERT_FALSE(webPush.init(bad, testConfig()));
+}
+
+void test_generate_ecdh_context_derives_public_key_for_valid_private_key() {
+	ESPWebPush webPush;
+	TEST_ASSERT_TRUE(webPush.initCrypto());
+
+	std::vector<uint8_t> privateKey;
+	std::vector<uint8_t> expectedPublicKey;
+	std::vector<uint8_t> derivedPublicKey;
+
+	TEST_ASSERT_TRUE(webPush.base64UrlDecode(kNodeGeneratedPrivateKey, privateKey));
+	TEST_ASSERT_TRUE(webPush.decodeP256PublicKey(kNodeGeneratedPublicKey, expectedPublicKey));
+	TEST_ASSERT_TRUE(webPush.generateECDHContext(privateKey, derivedPublicKey));
+	TEST_ASSERT_EQUAL(expectedPublicKey.size(), derivedPublicKey.size());
+	TEST_ASSERT_EQUAL_UINT8_ARRAY(
+	    expectedPublicKey.data(),
+	    derivedPublicKey.data(),
+	    expectedPublicKey.size()
+	);
+
+	webPush.deinitCrypto();
+}
+
+void test_derive_public_key_rejects_invalid_private_scalar() {
+	ESPWebPush webPush;
+	std::vector<uint8_t> invalidPrivateKey(32, 0);
+	std::vector<uint8_t> derivedPublicKey;
+
+	TEST_ASSERT_FALSE(webPush.deriveP256PublicKey(invalidPrivateKey, derivedPublicKey));
+	TEST_ASSERT_TRUE(derivedPublicKey.empty());
+
+	webPush.deinitCrypto();
 }
 
 void test_push_payload_rejects_missing_required_fields() {
@@ -626,7 +675,10 @@ void setup() {
 	RUN_TEST(test_join_returns_not_running_before_init);
 	RUN_TEST(test_request_stop_and_join_complete_for_idle_worker);
 	RUN_TEST(test_invalid_subject_rejected);
+	RUN_TEST(test_init_accepts_node_generated_unpadded_base64url_vapid_keys);
 	RUN_TEST(test_mismatched_vapid_keys_rejected);
+	RUN_TEST(test_generate_ecdh_context_derives_public_key_for_valid_private_key);
+	RUN_TEST(test_derive_public_key_rejects_invalid_private_scalar);
 	RUN_TEST(test_push_payload_rejects_missing_required_fields);
 	RUN_TEST(test_json_document_rejects_unknown_top_level_keys);
 	RUN_TEST(test_json_variant_rejects_wrong_types);

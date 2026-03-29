@@ -111,12 +111,20 @@ bool ESPWebPush::decodeP256PrivateKey(const std::string &keyBase64, std::vector<
 
 bool ESPWebPush::deriveP256PublicKey(
     const std::vector<uint8_t> &privateKey, std::vector<uint8_t> &publicKeyOut
-) const {
+) {
+	publicKeyOut.clear();
 	if (privateKey.size() != 32) {
+		ESP_LOGE(kTag, "deriveP256PublicKey: private key length invalid");
+		return false;
+	}
+
+	if (!initCrypto()) {
+		ESP_LOGE(kTag, "deriveP256PublicKey: crypto init failed");
 		return false;
 	}
 
 	bool success = false;
+	int ret = 0;
 	mbedtls_ecp_group group;
 	mbedtls_mpi d;
 	mbedtls_ecp_point q;
@@ -126,36 +134,61 @@ bool ESPWebPush::deriveP256PublicKey(
 	mbedtls_ecp_point_init(&q);
 
 	do {
-		if (mbedtls_ecp_group_load(&group, MBEDTLS_ECP_DP_SECP256R1) != 0) {
+		ret = mbedtls_ecp_group_load(&group, MBEDTLS_ECP_DP_SECP256R1);
+		if (ret != 0) {
+			ESP_LOGE(kTag, "deriveP256PublicKey: failed to load curve -0x%04x", -ret);
 			break;
 		}
-		if (mbedtls_mpi_read_binary(&d, privateKey.data(), privateKey.size()) != 0) {
+		ret = mbedtls_mpi_read_binary(&d, privateKey.data(), privateKey.size());
+		if (ret != 0) {
+			ESP_LOGE(kTag, "deriveP256PublicKey: failed to read private key -0x%04x", -ret);
 			break;
 		}
-		if (mbedtls_ecp_check_privkey(&group, &d) != 0) {
+		ret = mbedtls_ecp_check_privkey(&group, &d);
+		if (ret != 0) {
+			ESP_LOGE(kTag, "deriveP256PublicKey: private key rejected -0x%04x", -ret);
 			break;
 		}
-		if (mbedtls_ecp_mul(&group, &q, &d, &group.G, nullptr, nullptr) != 0) {
+		ret = mbedtls_ecp_mul(
+		    &group,
+		    &q,
+		    &d,
+		    &group.G,
+		    mbedtls_ctr_drbg_random,
+		    _crypto ? &(_crypto->ctrDrbg) : nullptr
+		);
+		if (ret != 0) {
+			ESP_LOGE(kTag, "deriveP256PublicKey: point multiplication failed -0x%04x", -ret);
 			break;
 		}
-		if (mbedtls_ecp_check_pubkey(&group, &q) != 0) {
+		ret = mbedtls_ecp_check_pubkey(&group, &q);
+		if (ret != 0) {
+			ESP_LOGE(kTag, "deriveP256PublicKey: public key rejected -0x%04x", -ret);
 			break;
 		}
 
 		publicKeyOut.assign(65, 0);
 		size_t actualLen = 0;
-		if (mbedtls_ecp_point_write_binary(
+		ret = mbedtls_ecp_point_write_binary(
 		        &group,
 		        &q,
 		        MBEDTLS_ECP_PF_UNCOMPRESSED,
 		        &actualLen,
 		        publicKeyOut.data(),
 		        publicKeyOut.size()
-		    ) != 0) {
+		    );
+		if (ret != 0) {
+			ESP_LOGE(kTag, "deriveP256PublicKey: failed to export point -0x%04x", -ret);
 			publicKeyOut.clear();
 			break;
 		}
 		if (actualLen != 65 || publicKeyOut[0] != 0x04) {
+			ESP_LOGE(
+			    kTag,
+			    "deriveP256PublicKey: exported key shape invalid (len=%u first=0x%02x)",
+			    static_cast<unsigned>(actualLen),
+			    publicKeyOut.empty() ? 0 : publicKeyOut[0]
+			);
 			publicKeyOut.clear();
 			break;
 		}
