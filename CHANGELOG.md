@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - Fixed ESP32 VAPID key-pair validation and runtime public-key derivation to use the library DRBG-backed mbedTLS path instead of relying on null RNG callbacks.
+- CI now pins PIOArduino Core to `v6.1.19` and installs the ESP32 platform via `pio pkg install`, restoring PlatformIO compatibility with the current `platform-espressif32` package.
 
 ### Changed
 - Breaking: renamed the public transport struct from `Subscription` to `WebPushSubscription` everywhere with no compatibility alias.
