@@ -20,6 +20,8 @@ ArduinoJson v7+ is required for the structured payload API.
 - Payload-size guard with the RFC-safe default limit of 3993 bytes.
 - Small per-origin JWT cache to avoid re-signing every message.
 - Configurable queue length, memory caps, retries, timeouts, and worker task settings.
+- Optional TLS transport controls for certificate bundle, global CA store, and
+  common-name verification behavior.
 
 ## Quick Start
 
@@ -143,7 +145,12 @@ if (webPush.isInitialized()) {
 - `ttlSeconds` - Web Push TTL header.
 - `maxRetries`, `retryBaseDelayMs`, `retryMaxDelayMs` - retry/backoff controls.
 - `maxPayloadBytes` - plaintext payload size guard. The default is 3993 bytes; use `0` to disable.
+- `useTlsCertBundle` - attach `esp_crt_bundle_attach` when the build provides the ESP x509 bundle.
+- `useGlobalCaStore` - forward `use_global_ca_store` to `esp_http_client`.
+- `skipTlsCommonNameCheck` - forward `skip_cert_common_name_check` to `esp_http_client`.
 - `networkValidator` - optional callback for application-defined network readiness checks.
+
+The default transport behavior is certificate-bundle-backed (`useTlsCertBundle = true`), which matches common browser push providers such as FCM without extra app wiring.
 
 ## Gotchas
 - System time is required for VAPID JWT expiration.

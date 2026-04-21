@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Web Push HTTP transport now forwards certificate-bundle / global-CA /
+  common-name TLS options into `esp_http_client`, improving mixed Arduino +
+  ESP-IDF compatibility for provider HTTPS endpoints.
+- Transport failure logs now include endpoint host, path, origin class,
+  `esp_err_t`, and HTTP status for field diagnostics.
 - Fixed ESP32 VAPID key-pair validation and runtime public-key derivation to use the library DRBG-backed mbedTLS path instead of relying on null RNG callbacks.
 - CI now pins PIOArduino Core to `v6.1.19` and installs the ESP32 platform via `pio pkg install`, restoring PlatformIO compatibility with the current `platform-espressif32` package.
 
@@ -13,6 +18,8 @@ All notable changes to this project will be documented in this file.
 - Breaking: renamed `PushMessage.sub` to `PushMessage.subscription` for API consistency.
 - Breaking: removed app-level metadata fields `deviceId`, `disabledTags`, and `deleted` from the transport struct.
 - `validateSubscription()` now validates only the required Web Push transport fields: `endpoint`, `p256dh`, and `auth`.
+- `WebPushConfig` gained transport defaults for `useTlsCertBundle`,
+  `useGlobalCaStore`, and `skipTlsCommonNameCheck`.
 
 ## [2.0.0] - 2026-03-28
 

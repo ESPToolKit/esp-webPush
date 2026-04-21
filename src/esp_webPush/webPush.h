@@ -138,6 +138,9 @@ struct WebPushConfig {
 	uint32_t retryBaseDelayMs = 1500;
 	uint32_t retryMaxDelayMs = 15000;
 	size_t maxPayloadBytes = 3993;
+	bool useTlsCertBundle = true;
+	bool useGlobalCaStore = false;
+	bool skipTlsCommonNameCheck = false;
 	WebPushNetworkValidator networkValidator;
 };
 
